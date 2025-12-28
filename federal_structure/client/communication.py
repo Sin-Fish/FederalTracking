@@ -6,6 +6,7 @@ import threading
 import os
 import pickle
 import zipfile
+import shutil
 
 import numpy as np
 from sklearn.metrics.pairwise import pairwise_distances_argmin
@@ -37,12 +38,12 @@ class CommunicationModule:
         self.embedding_dim = 384
         
         # 本地模型缓存路径
-        self.model_cache_path = "./models/embedding_model_cache"
-        self.model_zip_path = "./models/embedding_model.zip"
+        self.model_cache_path = "./model_cache"
+        self.model_name = "all-MiniLM-L6-v2"
     
     def check_local_model(self, server_model_hash: str) -> bool:
         """检查本地是否已有指定哈希的模型"""
-        hash_file_path = f"{self.model_cache_path}_hash.txt"
+        hash_file_path = f"{self.model_cache_path}/{self.model_name}_hash.txt"
         if not os.path.exists(hash_file_path):
             return False
             
@@ -53,47 +54,168 @@ class CommunicationModule:
         except Exception:
             return False
     
-    def download_model_from_server(self, server_model_hash: str) -> bool:
-        """从服务器下载模型"""
-        print(f"[CLIENT] 从服务器下载模型，哈希: {server_model_hash[:16]}...")
+    def _download_model_from_server(self, model_name: str) -> bool:
+        """
+        从服务器下载模型文件，支持断点续传和哈希验证
+        
+        返回: True表示成功，False表示失败
+        """
+        import hashlib
+        
+        # 本地缓存路径
+        cache_dir = self.model_cache_path
+        os.makedirs(cache_dir, exist_ok=True)
+        
+        # 临时文件路径
+        temp_zip_path = f"{cache_dir}/{model_name}.temp.zip"
+        final_zip_path = f"{cache_dir}/{model_name}.zip"
+        extract_dir = f"{cache_dir}/{model_name}"
         
         try:
+            print(f"[CLIENT] 开始下载模型 {model_name}...")
+            
+            # 使用流式下载，支持大文件
+            headers = {}
+            
+            # 检查是否存在部分下载的文件（支持断点续传）
+            if os.path.exists(temp_zip_path):
+                downloaded_size = os.path.getsize(temp_zip_path)
+                headers['Range'] = f'bytes={downloaded_size}-'
+                print(f"[CLIENT] 发现未完成的下载，尝试续传 ({downloaded_size} bytes)")
+            
             response = requests.get(
                 f"{self.server_url}/api/model/download",
-                timeout=self.request_timeout
+                headers=headers,
+                stream=True,
+                timeout=30
             )
             
-            if response.status_code != 200:
-                print(f"[CLIENT] 下载模型失败: HTTP {response.status_code}")
+            if response.status_code not in [200, 206]:  # 200 OK, 206 Partial Content
+                print(f"[CLIENT] 下载请求失败: {response.status_code}")
                 return False
             
-            # 获取服务器返回的模型哈希
-            response_hash = response.headers.get('X-Model-Hash', '')
-            if response_hash != server_model_hash:
-                print(f"[CLIENT] 模型哈希验证失败: 期望 {server_model_hash[:16]}, 实际 {response_hash[:16]}")
+            # 获取服务器提供的哈希值
+            server_hash = response.headers.get('X-Model-Hash')
+            if not server_hash:
+                print("[CLIENT] 警告：服务器未提供模型哈希值")
+            
+            # 以追加模式打开文件（支持断点续传）
+            mode = 'ab' if 'Range' in headers else 'wb'
+            with open(temp_zip_path, mode) as f:
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = os.path.getsize(temp_zip_path) if 'Range' in headers else 0
+                
+                # 进度显示
+                chunk_size = 8192
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # 显示下载进度
+                        if total_size > 0:
+                            percent = (downloaded / total_size) * 100
+                            if int(percent) % 10 == 0:  # 每10%显示一次
+                                print(f"[CLIENT] 下载进度: {percent:.1f}% ({downloaded}/{total_size} bytes)")
+            
+            print("[CLIENT] 文件下载完成")
+            
+            # 重命名为最终文件
+            if os.path.exists(final_zip_path):
+                os.remove(final_zip_path)
+            os.rename(temp_zip_path, final_zip_path)
+            
+            # 验证文件哈希
+            print("[CLIENT] 验证文件完整性...")
+            with open(final_zip_path, 'rb') as f:
+                local_hash = hashlib.sha256(f.read()).hexdigest()
+            
+            if server_hash and local_hash != server_hash:
+                print(f"[CLIENT] 文件哈希验证失败!")
+                print(f"  本地: {local_hash[:16]}...")
+                print(f"  服务器: {server_hash[:16]}...")
+                
+                # 删除损坏的文件
+                os.remove(final_zip_path)
                 return False
             
-            # 保存下载的模型压缩包
-            os.makedirs(os.path.dirname(self.model_zip_path), exist_ok=True)
-            with open(self.model_zip_path, 'wb') as f:
-                f.write(response.content)
+            print(f"[CLIENT] 文件哈希验证通过: {local_hash[:16]}...")
             
-            # 解压模型
-            with zipfile.ZipFile(self.model_zip_path, 'r') as zip_ref:
-                zip_ref.extractall("./models/")
+            # 解压文件
+            print("[CLIENT] 解压模型文件...")
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir)
             
-            # 保存哈希值用于后续验证
-            hash_file_path = f"{self.model_cache_path}_hash.txt"
-            with open(hash_file_path, 'w') as f:
-                f.write(server_model_hash)
+            with zipfile.ZipFile(final_zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_dir)
             
-            print(f"[CLIENT] 模型下载并解压成功")
+            # 清理压缩包（可选）
+            os.remove(final_zip_path)
+            
+            # 验证解压后的模型
+            print("[CLIENT] 验证解压后的模型...")
+            verify_hash = self._compute_directory_hash(extract_dir)
+            print(f"[CLIENT] 模型目录哈希: {verify_hash[:16]}...")
+            
             return True
             
-        except Exception as e:
-            print(f"[CLIENT] 下载模型时发生错误: {e}")
+        except requests.exceptions.Timeout:
+            print("[CLIENT] 下载超时，文件可能不完整")
             return False
-    
+        except requests.exceptions.ConnectionError:
+            print("[CLIENT] 连接错误")
+            return False
+        except Exception as e:
+            print(f"[CLIENT] 下载过程中发生错误: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # 清理可能损坏的文件
+            for path in [temp_zip_path, final_zip_path]:
+                if os.path.exists(path):
+                    os.remove(path)
+            return False
+
+    def _compute_directory_hash(self, dir_path: str) -> str:
+        """计算目录的哈希值"""
+        import hashlib
+        sha256_hash = hashlib.sha256()
+        
+        try:
+            for root, dirs, files in os.walk(dir_path):
+                for file in sorted(files):
+                    file_path = os.path.join(root, file)
+                    with open(file_path, 'rb') as f:
+                        # 添加文件名到哈希
+                        rel_path = os.path.relpath(file_path, dir_path)
+                        sha256_hash.update(rel_path.encode('utf-8'))
+                        # 添加文件内容
+                        while chunk := f.read(8192):
+                            sha256_hash.update(chunk)
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            print(f"[CLIENT] 计算目录哈希失败: {e}")
+            return ""
+
+    def _load_embedding_model(self, model_name: str):
+        """从本地缓存加载嵌入模型"""
+        cache_path = f"./model_cache/{model_name}"
+        
+        if not os.path.exists(cache_path):
+            print(f"[CLIENT] 错误：模型缓存不存在于 {cache_path}")
+            return None
+        
+        try:
+            print(f"[CLIENT] 从本地缓存加载模型: {cache_path}")
+            from sentence_transformers import SentenceTransformer
+            self.embedding_model = SentenceTransformer(cache_path)
+            self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+            print(f"[CLIENT] 模型加载成功，嵌入维度: {self.embedding_dim}")
+            return self.embedding_model
+        except Exception as e:
+            print(f"[CLIENT] 加载模型失败: {e}")
+            return None
+
     def load_embedding_model(self):
         """加载嵌入模型，优先从服务器获取或使用本地缓存"""
         print("[CLIENT] 准备加载嵌入模型...")
@@ -112,45 +234,51 @@ class CommunicationModule:
                 # 检查本地是否有匹配的模型
                 if self.check_local_model(model_hash):
                     print("[CLIENT] 本地已存在匹配的模型，准备加载...")
-                    # 加载本地缓存模型（这里只是模拟，实际需要根据具体模型类型实现）
-                    print("[CLIENT] 本地模型验证通过")
-                    # 对于SentenceTransformer模型，我们仍需要加载它
-                    from sentence_transformers import SentenceTransformer
-                    self.embedding_model = SentenceTransformer('./models/all-MiniLM-L6-v2')
-                    print("[CLIENT] 嵌入模型加载成功")
-                else:
-                    print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:16]}...)")
-                    
-                    # 从服务器下载模型
-                    if self.download_model_from_server(model_hash):
-                        # 下载成功后，加载模型
-                        from sentence_transformers import SentenceTransformer
-                        self.embedding_model = SentenceTransformer('./models/all-MiniLM-L6-v2')
-                        print("[CLIENT] 从服务器下载的模型加载成功")
+                    # 加载本地缓存模型
+                    model = self._load_embedding_model(self.model_name)
+                    if model is not None:
+                        print("[CLIENT] 嵌入模型加载成功")
+                        return True
                     else:
-                        print("[CLIENT] 从服务器下载模型失败")
-                        # 尝试使用随机向量作为备选方案
-                        print("[CLIENT] 使用随机向量作为嵌入（备用方案）")
+                        print("[CLIENT] 本地模型加载失败")
+                
+                print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:16]}...)")
+                
+                # 从服务器下载模型
+                if self._download_model_from_server(self.model_name):
+                    # 下载成功后，加载模型
+                    model = self._load_embedding_model(self.model_name)
+                    if model is not None:
+                        # 保存哈希值用于后续验证
+                        hash_file_path = f"{self.model_cache_path}/{self.model_name}_hash.txt"
+                        with open(hash_file_path, 'w') as f:
+                            f.write(model_hash)
+                        print("[CLIENT] 从服务器下载的模型加载成功")
+                        return True
+                    else:
+                        print("[CLIENT] 从服务器下载的模型加载失败")
+                        return False
+                else:
+                    print("[CLIENT] 从服务器下载模型失败")
+                    return False
             else:
                 print(f"[CLIENT] 获取模型信息失败: {response.status_code}")
-                print("[CLIENT] 使用随机向量作为嵌入（备用方案）")
+                return False
         except Exception as e:
             print(f"[CLIENT] 加载嵌入模型时发生错误: {e}")
-            print("[CLIENT] 使用随机向量作为嵌入（备用方案）")
+            return False
     
     def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
         """将行为字符串转换为嵌入向量"""
-        self.load_embedding_model()
-        
-        if self.embedding_model is not None:
-            print(f"[CLIENT] 嵌入 {len(strings)} 个行为字符串...")
-            embeddings = self.embedding_model.encode(strings, show_progress_bar=False)
-            return embeddings
-        else:
-            # 如果无法加载模型，则使用随机向量作为占位符
-            print(f"[CLIENT] 使用随机向量嵌入 {len(strings)} 个行为字符串...")
+        success = self.load_embedding_model()
+        if not success:
+            print("[CLIENT] 无法加载嵌入模型，使用随机向量作为嵌入（备用方案）")
             embeddings = np.random.rand(len(strings), self.embedding_dim).astype(np.float32)
             return embeddings
+        
+        print(f"[CLIENT] 嵌入 {len(strings)} 个行为字符串...")
+        embeddings = self.embedding_model.encode(strings, show_progress_bar=False)
+        return embeddings
     
     def register_to_server(self) -> bool:
         """向服务器报到"""
