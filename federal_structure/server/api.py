@@ -1,0 +1,73 @@
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+
+from .models import ClientRegister, ClientStatus, DataSubmission, ModelUpdate
+from .core import FederatedServerCore
+
+
+class FederatedServerAPI:
+    def __init__(self, n_prototypes=5):
+        self.app = FastAPI(title="联邦学习服务器", version="1.0")
+        self.core = FederatedServerCore(n_prototypes=n_prototypes)
+        
+        # 初始化API路由
+        self.setup_routes()
+    
+    def setup_routes(self):
+        """设置所有API路由"""
+        
+        @self.app.get("/")
+        async def root():
+            return {
+                "service": "联邦学习服务器",
+                "status": "运行中",
+                "client_count": len(self.core.client_registry),
+                "training_queue_size": len(self.core.training_queue),
+                "prototypes_ready": self.core.global_prototypes is not None
+            }
+        
+        @self.app.post("/api/client/register")
+        async def client_register(req: ClientRegister):
+            """客户端报到接口"""
+            return await self.core.handle_client_register(req)
+        
+        @self.app.post("/api/client/status")
+        async def update_status(status: ClientStatus):
+            """客户端状态上报接口"""
+            return await self.core.handle_status_update(status)
+        
+        @self.app.post("/api/data/collect")
+        async def collect_data(submission: DataSubmission):
+            """数据征收接口"""
+            return await self.core.handle_data_collection(submission)
+        
+        @self.app.get("/api/training/start")
+        async def start_training():
+            """启动训练（管理员接口）"""
+            return await self.core.initiate_training()
+        
+        @self.app.post("/api/model/update")
+        async def submit_update(update: ModelUpdate):
+            """接收模型更新"""
+            return await self.core.handle_model_update(update)
+        
+        @self.app.get("/api/system/prototypes")
+        async def get_prototypes():
+            """获取当前全局原型"""
+            if self.core.global_prototypes is None:
+                raise HTTPException(status_code=404, detail="原型尚未生成")
+            return {
+                "prototypes": self.core.global_prototypes.tolist(),
+                "labels": self.core.prototype_labels,
+                "count": len(self.core.prototype_labels)
+            }
+        
+        @self.app.get("/api/system/clients")
+        async def get_clients():
+            """获取所有客户端状态"""
+            return self.core.client_registry
+        
+        @self.app.post("/api/federated/aggregate")
+        async def aggregate_models():
+            """手动触发模型聚合"""
+            return await self.core.perform_federated_averaging()

@@ -1,9 +1,9 @@
 ```
 # 基本启动
-python federated_server.py
+python server.py
 
 # 带参数启动
-python federated_server.py --host 127.0.0.1 --port 8080 --prototypes 5
+python server.py --host 127.0.0.1 --port 8080 --prototypes 3
 ```
 
 
