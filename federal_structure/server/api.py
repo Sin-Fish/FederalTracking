@@ -71,3 +71,13 @@ class FederatedServerAPI:
         async def aggregate_models():
             """手动触发模型聚合"""
             return await self.core.perform_federated_averaging()
+        
+        @self.app.get("/api/system/model_info")
+        async def get_model_info():
+            """获取嵌入模型信息"""
+            return await self.core.get_model_info()
+        
+        @self.app.post("/api/system/download_model")
+        async def download_model(client_id: str, model_hash: str):
+            """下载嵌入模型"""
+            return await self.core.provide_model_to_client(client_id, model_hash)

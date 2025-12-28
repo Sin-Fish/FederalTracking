@@ -38,6 +38,9 @@ class FederatedServerCore:
         # 嵌入模型
         self.embedding_model = None
         self.embedding_dim = 384
+        
+        # 模型哈希，用于客户端验证
+        self.model_hash = None
 
     # ==================== 核心业务逻辑 ====================
     async def handle_client_register(self, req):
@@ -154,6 +157,11 @@ class FederatedServerCore:
         # 加载嵌入模型
         if self.embedding_model is None:
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            # 计算模型哈希，用于客户端验证
+            model_path = self.embedding_model.save('./models/embedding_model_cache')
+            with open(f'{model_path}/config.json', 'rb') as f:
+                model_config = f.read()
+            self.model_hash = hashlib.sha256(model_config).hexdigest()
         
         # 转换为向量
         print(f"[SERVER] 正在嵌入 {len(all_samples)} 个行为样本...")
@@ -353,6 +361,43 @@ class FederatedServerCore:
         
         print(f"[SERVER] 聚合模型已保存到: {filename}")
     
+    # ==================== 模型分发逻辑 ====================
+    async def get_model_info(self):
+        """获取嵌入模型信息，供客户端验证"""
+        if self.model_hash is None:
+            # 如果模型尚未初始化，先初始化
+            if self.embedding_model is None:
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                # 计算模型哈希，用于客户端验证
+                model_path = self.embedding_model.save('./models/embedding_model_cache')
+                with open(f'{model_path}/config.json', 'rb') as f:
+                    model_config = f.read()
+                self.model_hash = hashlib.sha256(model_config).hexdigest()
+        
+        return {
+            "hash": self.model_hash,
+            "version": "all-MiniLM-L6-v2",
+            "embedding_dim": self.embedding_dim,
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    async def provide_model_to_client(self, client_id: str, model_hash: str):
+        """向客户端提供模型"""
+        # 验证模型哈希
+        if self.model_hash != model_hash:
+            return {"status": "error", "message": "模型哈希不匹配"}
+        
+        # 模拟返回模型数据（在实际实现中，这里应该返回实际的模型参数）
+        return {
+            "status": "success",
+            "model_data": {
+                "hash": self.model_hash,
+                "version": "all-MiniLM-L6-v2",
+                "embedding_dim": self.embedding_dim
+            },
+            "message": "模型信息已提供，客户端可使用此信息进行嵌入计算"
+        }
+
     # ==================== 后台任务 ====================
     async def status_monitor(self):
         """后台状态监控任务"""

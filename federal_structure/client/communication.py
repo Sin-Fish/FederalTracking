@@ -1,5 +1,7 @@
 import requests
 import time
+import os
+import pickle
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 import threading
@@ -28,15 +30,76 @@ class CommunicationModule:
         # 通信状态
         self.is_registered = False
         self.last_heartbeat = time.time()
+        self.request_timeout = 30  # 增加请求超时时间
         
         # 嵌入模型
         self.embedding_model = None
         self.embedding_dim = 384
+        
+        # 本地模型缓存路径
+        self.model_cache_path = "./models/embedding_model_cache.pkl"
+    
+    def check_local_model(self, server_model_hash: str) -> bool:
+        """检查本地是否已有指定哈希的模型"""
+        if not os.path.exists(self.model_cache_path):
+            return False
+            
+        try:
+            with open(self.model_cache_path, 'rb') as f:
+                cached_data = pickle.load(f)
+                cached_hash = cached_data.get('hash', '')
+                return cached_hash == server_model_hash
+        except Exception:
+            return False
     
     def load_embedding_model(self):
-        """加载嵌入模型"""
-        if self.embedding_model is None:
-            print("[CLIENT] 加载嵌入模型...")
+        """加载嵌入模型，优先从缓存加载"""
+        if self.embedding_model is not None:
+            return
+            
+        print("[CLIENT] 准备加载嵌入模型...")
+        
+        # 向服务器请求模型信息
+        try:
+            response = requests.get(
+                f"{self.server_url}/api/system/model_info",
+                timeout=self.request_timeout
+            )
+            
+            if response.status_code == 200:
+                model_info = response.json()
+                model_hash = model_info.get('hash', '')
+                
+                # 检查本地是否有匹配的模型
+                if self.check_local_model(model_hash):
+                    print("[CLIENT] 本地已存在匹配的模型，加载中...")
+                    # 加载本地缓存模型
+                    with open(self.model_cache_path, 'rb') as f:
+                        cached_data = pickle.load(f)
+                        self.embedding_model = cached_data.get('model', None)
+                    print("[CLIENT] 本地模型加载成功")
+                else:
+                    print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:10]}...)")
+                    # 下载并初始化模型
+                    self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                    
+                    # 保存到本地缓存
+                    os.makedirs(os.path.dirname(self.model_cache_path), exist_ok=True)
+                    cached_data = {
+                        'hash': model_hash,
+                        'model': self.embedding_model,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                    with open(self.model_cache_path, 'wb') as f:
+                        pickle.dump(cached_data, f)
+                    
+                    print("[CLIENT] 模型已缓存到本地")
+            else:
+                print(f"[CLIENT] 获取模型信息失败: {response.status_code}")
+                # 如果无法获取服务器模型信息，则使用本地模型
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        except Exception as e:
+            print(f"[CLIENT] 获取模型信息失败: {e}，使用本地模型")
             self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
     
     def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
@@ -68,7 +131,7 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/client/register",
                 json=payload,
-                timeout=10
+                timeout=self.request_timeout
             )
             
             if response.status_code == 200:
@@ -100,7 +163,7 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/data/collect",
                 json=payload,
-                timeout=10
+                timeout=self.request_timeout
             )
             
             if response.status_code == 200:
@@ -121,7 +184,7 @@ class CommunicationModule:
         try:
             response = requests.get(
                 f"{self.server_url}/api/system/prototypes",
-                timeout=10
+                timeout=self.request_timeout
             )
             
             if response.status_code == 200:
@@ -180,7 +243,7 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/client/status",
                 json=payload,
-                timeout=5
+                timeout=self.request_timeout
             )
             
             if response.status_code == 200:
@@ -219,7 +282,7 @@ class CommunicationModule:
                 response = requests.post(
                     f"{self.server_url}/api/model/update",
                     json=payload,
-                    timeout=30
+                    timeout=self.request_timeout
                 )
                 
                 if response.status_code == 200:

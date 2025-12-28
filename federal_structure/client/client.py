@@ -86,7 +86,15 @@ class FederatedClient:
         """加载嵌入模型"""
         if self.embedding_model is None:
             print("[CLIENT] 加载嵌入模型...")
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            try:
+                # 尝试加载模型，使用本地缓存
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder="./models")
+            except Exception as e:
+                print(f"[CLIENT] 从HuggingFace下载模型失败: {e}")
+                print("[CLIENT] 尝试使用本地缓存或离线模式...")
+                # 使用本地缓存路径或离线模式
+                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder="./models", 
+                                                          trust_remote_code=True)
     
     def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
         """将行为字符串转换为嵌入向量"""
@@ -155,6 +163,8 @@ class FederatedClient:
         # 5. 提交高频数据
         if not self.submit_high_freq_data():
             print("[CLIENT] 高频数据提交失败，继续流程...")
+        else:
+            print("[CLIENT] 高频数据提交成功")
         
         # 6. 等待并获取原型（这里需要等待服务器完成聚类）
         print("[CLIENT] 等待服务器生成全局原型...")
@@ -168,18 +178,36 @@ class FederatedClient:
         print("[CLIENT] 等待训练开始...")
         # 这里可以添加轮询服务器状态的逻辑
         
-        # 8. 开始本地训练
+        # 8. 模型预检查：验证数据与原型的兼容性
+        print("[CLIENT] 执行模型预检查...")
+        compatible, diagnosis = self._check_data_compatibility()
+        
+        if not compatible:
+            error_msg = f"模型预检查失败: {diagnosis.get('error', '数据与全局原型不兼容')}"
+            print(f"[CLIENT] {error_msg}")
+            print(f"[CLIENT] 诊断信息: {diagnosis}")
+            self.send_status_update("precheck_failed", 0.0)
+            return
+        else:
+            print(f"[CLIENT] 模型预检查通过")
+            print(f"[CLIENT] 平均距离: {diagnosis['avg_distance']:.4f}, 标准差: {diagnosis['std_distance']:.4f}")
+            self.send_status_update("precheck_passed", 0.5)
+        
+        # 9. 开始本地训练
         local_models = self.training.train_local_models(
             self.data_processor.behavior_embeddings, 
             self.communication.prototype_mapping
         )
         
-        # 9. 提交模型更新
+        # 10. 提交模型更新
         self.submit_model_updates()
         
         print("\n" + "="*60)
         print("客户端流程完成！")
         print("="*60)
+        
+        # 发送完成状态
+        self.send_status_update("completed", 1.0)
 
 
 # ==================== 命令行接口 ====================
