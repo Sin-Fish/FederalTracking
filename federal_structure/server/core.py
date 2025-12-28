@@ -14,11 +14,7 @@ import numpy as np
 from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse, FileResponse
 
-# 机器学习相关导入
-from sentence_transformers import SentenceTransformer
-from sklearn.cluster import KMeans
-from collections import Counter
-
+# 机器学习相关导入（延迟导入）
 from ml_models import SimpleLSTM
 from models import ModelUpdate
 
@@ -45,6 +41,63 @@ class FederatedServerCore:
         
         # 训练状态跟踪
         self.training_start_events: Dict[str, asyncio.Event] = {}  # 用于跟踪客户端训练开始事件
+        
+        # 初始化时尝试加载本地模型
+        self._initialize_embedding_model()
+    
+    def _initialize_embedding_model(self):
+        """初始化嵌入模型，优先从本地加载"""
+        model_name = "all-MiniLM-L6-v2"
+        model_dir = f"./models/{model_name}"
+        
+        print(f"[SERVER] 初始化嵌入模型...")
+        
+        if os.path.exists(model_dir):
+            try:
+                print(f"[SERVER] 从本地加载模型: {model_dir}")
+                # 延迟导入，避免启动时就加载sentence_transformers
+                from sentence_transformers import SentenceTransformer
+                self.embedding_model = SentenceTransformer(model_dir)
+                
+                # 计算并存储模型哈希
+                self.embedding_model_hash = self._compute_model_hash(model_dir)
+                print(f"[SERVER] 本地模型加载成功，哈希: {self.embedding_model_hash[:16]}")
+            except Exception as e:
+                print(f"[SERVER] 从本地加载模型失败: {e}，将重新下载")
+                self._download_model_sync(model_name)
+        else:
+            print(f"[SERVER] 本地模型不存在: {model_dir}，开始下载")
+            self._download_model_sync(model_name)
+    
+    def _download_model_sync(self, model_name: str):
+        """同步下载模型"""
+        try:
+            print(f"[SERVER] 正在下载嵌入模型 {model_name}...")
+            
+            models_dir = "./models"
+            os.makedirs(models_dir, exist_ok=True)
+            
+            # 延迟导入，避免启动时就加载sentence_transformers
+            from sentence_transformers import SentenceTransformer
+            
+            # 下载模型
+            model = SentenceTransformer(model_name)
+            model.save(f"{models_dir}/{model_name}")
+            print(f"[SERVER] 模型下载完成，保存至 {models_dir}/{model_name}")
+            
+            # 加载模型
+            self.embedding_model = model
+            
+            # 计算并存储模型哈希
+            self.embedding_model_hash = self._compute_model_hash(f"{models_dir}/{model_name}")
+            print(f"[SERVER] 模型哈希: {self.embedding_model_hash[:16]}")
+            
+        except Exception as e:
+            print(f"[SERVER] 下载模型失败: {e}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"无法下载模型: {e}"
+            )
 
     # ==================== 核心业务逻辑 ====================
     async def handle_client_register(self, req):
@@ -164,9 +217,22 @@ class FederatedServerCore:
             print(f"[SERVER] 警告: 样本数({len(all_samples)})少于原型数({self.n_prototypes})")
             return {"status": "insufficient_data"}
         
-        # 加载嵌入模型
+        # 确保嵌入模型已加载
         if self.embedding_model is None:
-            await self._download_embedding_model('all-MiniLM-L6-v2')
+            print("[SERVER] 错误：嵌入模型未加载")
+            return {"status": "model_not_loaded"}
+        
+        # 延迟导入 ML 依赖
+        try:
+            from sentence_transformers import SentenceTransformer
+            from sklearn.cluster import KMeans
+            from collections import Counter
+        except ImportError as e:
+            print(f"[SERVER] 缺少必要的机器学习依赖: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail="服务器缺少必要的机器学习库"
+            )
         
         # 转换为向量
         print(f"[SERVER] 正在嵌入 {len(all_samples)} 个行为样本...")
@@ -388,8 +454,7 @@ class FederatedServerCore:
         """获取嵌入模型信息，供客户端验证"""
         if self.embedding_model_hash is None:
             # 如果模型尚未初始化，先初始化
-            if self.embedding_model is None:
-                await self._download_embedding_model('all-MiniLM-L6-v2')
+            self._initialize_embedding_model()
         
         return {
             "hash": self.embedding_model_hash,
@@ -405,8 +470,10 @@ class FederatedServerCore:
         models_dir = "./models"
         os.makedirs(models_dir, exist_ok=True)
         
-        # 下载模型（这里以sentence-transformers为例）
         try:
+            # 延迟导入，避免启动时就加载sentence_transformers
+            from sentence_transformers import SentenceTransformer
+            
             # 注意：这个下载是在服务器端进行的
             model = SentenceTransformer(model_name)
             model.save(f"{models_dir}/{model_name}")

@@ -81,29 +81,6 @@ class FederatedClient:
         """获取最高频的行为字符串"""
         return self.data_processor.get_high_frequency_actions(top_k)
     
-    # ==================== 嵌入与原型映射 ====================
-    def load_embedding_model(self):
-        """加载嵌入模型"""
-        if self.embedding_model is None:
-            print("[CLIENT] 加载嵌入模型...")
-            try:
-                # 尝试加载模型，使用本地缓存
-                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder="./models")
-            except Exception as e:
-                print(f"[CLIENT] 从HuggingFace下载模型失败: {e}")
-                print("[CLIENT] 尝试使用本地缓存或离线模式...")
-                # 使用本地缓存路径或离线模式
-                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', cache_folder="./models", 
-                                                          trust_remote_code=True)
-    
-    def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
-        """将行为字符串转换为嵌入向量"""
-        self.load_embedding_model()
-        
-        print(f"[CLIENT] 嵌入 {len(strings)} 个行为字符串...")
-        embeddings = self.embedding_model.encode(strings, show_progress_bar=False)
-        return embeddings
-    
     # ==================== 联邦通信接口 ====================
     def register_to_server(self) -> bool:
         """向服务器报到"""
@@ -159,20 +136,26 @@ class FederatedClient:
         else:
             print("[CLIENT] 高频数据提交成功")
         
-        # 6. 等待并获取原型（这里需要等待服务器完成聚类）
-        print("[CLIENT] 等待服务器生成全局原型...")
-        time.sleep(10)  # 等待10秒
-        
-        if not self.fetch_prototypes():
-            print("[CLIENT] 获取原型失败，退出流程")
-            return
-        
-        # 7. 等待训练开始信号
+        # 6. 等待训练开始信号（在此之前服务器会完成原型生成）
         print("[CLIENT] 等待服务器训练开始指令...")
         training_info = self.communication.wait_for_training_start()
         if not training_info:
             print("[CLIENT] 未收到训练开始指令，退出流程")
             return
+        
+        # 7. 如果服务器返回了原型信息，使用这些原型
+        if "training_info" in training_info and training_info["training_info"]:
+            training_info_data = training_info["training_info"]
+            if training_info_data.get("prototypes"):
+                self.communication.global_prototypes = np.array(training_info_data["prototypes"])
+            if training_info_data.get("prototype_labels"):
+                self.communication.prototype_labels = training_info_data["prototype_labels"]
+        else:
+            # 如果服务器没有在训练指令中返回原型，单独获取
+            print("[CLIENT] 从服务器获取全局原型...")
+            if not self.fetch_prototypes():
+                print("[CLIENT] 获取原型失败，退出流程")
+                return
         
         # 8. 开始本地训练
         print("[CLIENT] 开始本地训练...")
