@@ -1,18 +1,18 @@
 import requests
-import time
-from datetime import datetime
-from typing import Dict, List, Optional, Any, Tuple
-import threading
-import os
-import pickle
-import zipfile
-import shutil
-
+import torch
+import torch.nn as nn
 import numpy as np
-from sklearn.metrics.pairwise import pairwise_distances_argmin
-
-from data_processor import DataProcessor
+import json
+import os  # 添加缺失的os导入
+import zipfile  # 添加缺失的zipfile导入
+from typing import Dict, List, Optional, Tuple, Any
+from datetime import datetime
+import requests
+import threading
+import time
+from collections import defaultdict
 from models import SimpleLSTM
+from data_processor import DataProcessor  # 添加缺失的导入
 
 
 class CommunicationModule:
@@ -428,11 +428,11 @@ class CommunicationModule:
                 "client_id": self.client_id,
                 "prototype_id": proto_id,
                 "model_state_dict": state_dict,
-                "data_size": int(data_size),
+                "data_size": data_size,
                 "metadata": {
-                    "round": int(current_round),
-                    "epochs": int(epochs),
-                    "data_points": int(data_size),
+                    "round": current_round,
+                    "epochs": epochs,
+                    "data_points": data_size,
                     "submitted_at": datetime.now().isoformat()
                 }
             }
@@ -441,12 +441,15 @@ class CommunicationModule:
             print(f"[CLIENT] 请求将发送到: {self.server_url}/api/model/update")
             
             try:
+                # 在发送请求前对整个payload进行深度清洗
+                cleaned_payload = self.deep_clean_for_json(payload)
+                
                 # 在发送请求前输出信息
                 print(f"[CLIENT] 正在发送POST请求到服务器...")
                 
                 response = requests.post(
                     f"{self.server_url}/api/model/update",
-                    json=payload,
+                    json=cleaned_payload,
                     timeout=60  # 增加超时时间
                 )
                 
@@ -468,6 +471,51 @@ class CommunicationModule:
         
         print("[CLIENT] 模型更新提交完成")
     
+    def deep_clean_for_json(self, obj):
+        """
+        递归地遍历数据结构，将所有numpy/torch类型转换为Python原生类型。
+        确保整个对象可以被json.dumps()序列化。
+        """
+        # 处理numpy标量 (int64, float32等)
+        if isinstance(obj, (np.integer, np.int64, np.int32, np.int16, np.int8)):
+            return int(obj)
+        if isinstance(obj, (np.floating, np.float64, np.float32, np.float16)):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        
+        # 处理numpy数组：转换为列表并递归清理
+        if isinstance(obj, np.ndarray):
+            # 特别处理空数组或标量数组
+            if obj.size == 0:
+                return []
+            if obj.ndim == 0:  # 标量数组，如 np.array(42)
+                return self.deep_clean_for_json(obj.item())
+            # 递归处理多维数组
+            return [self.deep_clean_for_json(item) for item in obj]
+        
+        # 处理PyTorch张量：先转numpy，再递归清理
+        if hasattr(torch, 'Tensor') and isinstance(obj, torch.Tensor):
+            # 确保在CPU上并转为numpy
+            cpu_obj = obj.cpu() if obj.is_cuda else obj
+            return self.deep_clean_for_json(cpu_obj.detach().numpy())
+        
+        # 处理列表和元组：递归清理每个元素
+        if isinstance(obj, (list, tuple)):
+            return [self.deep_clean_for_json(item) for item in obj]
+        
+        # 处理字典：递归清理键和值
+        if isinstance(obj, dict):
+            cleaned_dict = {}
+            for key, value in obj.items():
+                # 键也必须是字符串（JSON要求）
+                cleaned_key = str(key) if not isinstance(key, str) else key
+                cleaned_dict[cleaned_key] = self.deep_clean_for_json(value)
+            return cleaned_dict
+        
+        # 对于其他类型（str, int, float, bool, None），直接返回
+        return obj
+
     def start_heartbeat(self, interval: int = 30):
         """启动心跳线程"""
         self.current_status = "idle"  # 添加一个状态变量来跟踪当前状态

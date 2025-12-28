@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import Dict, Any
+import numpy as np
+from utils.numpy_utils import prepare_model_update_for_upload
 
 # ==================== LSTM模型定义（与服务器一致） ====================
 class SimpleLSTM(nn.Module):
@@ -16,34 +18,14 @@ class SimpleLSTM(nn.Module):
     
     def get_state_dict(self):
         """获取可序列化的状态字典"""
-        import numpy as np
-        
-        def convert_to_python_type(obj):
-            """将numpy类型转换为Python原生类型"""
-            if isinstance(obj, np.ndarray):
-                # 将numpy数组转换为Python列表，并确保所有元素都是原生类型
-                return [convert_to_python_type(item) for item in obj.tolist()]
-            elif isinstance(obj, np.integer):
-                return int(obj)
-            elif isinstance(obj, np.floating):
-                return float(obj)
-            elif isinstance(obj, list):
-                return [convert_to_python_type(item) for item in obj]
-            elif isinstance(obj, (int, float, str, bool, type(None))):
-                return obj
-            else:
-                # 如果是其他类型，尝试转换为numpy然后tolist
-                try:
-                    return convert_to_python_type(np.asarray(obj).tolist())
-                except:
-                    return obj
-        
-        state_dict = {}
+        # 先获取原始状态字典
+        raw_state_dict = {}
         for k, v in self.state_dict().items():
             numpy_val = v.cpu().numpy()
-            state_dict[k] = convert_to_python_type(numpy_val)
+            raw_state_dict[k] = numpy_val
         
-        return state_dict
+        # 使用工具函数安全地转换为可JSON序列化的格式
+        return prepare_model_update_for_upload(raw_state_dict)
     
     def load_state_dict(self, state_dict):
         """加载状态字典"""
