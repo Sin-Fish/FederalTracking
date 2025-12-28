@@ -272,14 +272,15 @@ class FederatedServerCore:
         
         # 检查这些客户端是否都完成了相应数量的模型上传
         all_clients_finished = True
+        unfinished_clients = []
+        
         for client_id in clients_with_prototypes:
             expected_count = self.client_expected_prototypes_count[client_id]
             actual_uploaded = len(self.client_finished_prototypes[client_id])
             
             if actual_uploaded < expected_count:
                 all_clients_finished = False
-                print(f"[SERVER] 客户端 {client_id} 尚未完成所有模型上传 ({actual_uploaded}/{expected_count})")
-                break
+                unfinished_clients.append(f"{client_id} ({actual_uploaded}/{expected_count})")
         
         if all_clients_finished and len(clients_with_prototypes) > 0:
             print(f"[SERVER] 所有 {len(clients_with_prototypes)} 个客户端已完成训练和模型上传，准备聚合")
@@ -297,7 +298,35 @@ class FederatedServerCore:
             else:
                 print("[SERVER] 某些原型缺少更新，无法聚合")
         else:
-            print(f"[SERVER] 尚有客户端未完成模型上传，继续等待...")
+            # 检查是否所有注册的客户端都处于完成或离线状态
+            all_registered_clients = set(self.client_registry.keys())
+            active_clients = set()  # 仍在训练或活动中的客户端
+            
+            for client_id in all_registered_clients:
+                client_status = self.client_registry[client_id].get("status", "unknown")
+                # 如果客户端状态不是finished或offline，则认为仍在活动
+                if client_status not in ["finished", "offline", "interrupted"]:
+                    active_clients.add(client_id)
+            
+            # 如果没有活动的客户端，开始聚合
+            if len(active_clients) == 0 and len(self.model_updates) > 0:
+                print(f"[SERVER] 所有注册客户端都已完成或离线，开始聚合，共 {len(clients_with_prototypes)} 个客户端参与")
+                
+                # 检查是否每个原型都有至少一个更新
+                all_prototypes_have_updates = True
+                for pid in range(self.n_prototypes):
+                    if len(self.model_updates[pid]) == 0:
+                        print(f"[SERVER] 原型 {pid} 还没有收到任何更新")
+                    
+                if any(len(self.model_updates[pid]) > 0 for pid in range(self.n_prototypes)):
+                    print("[SERVER] 部分原型有更新，开始聚合")
+                    await self.perform_federated_averaging()
+                else:
+                    print("[SERVER] 没有任何原型有更新，无法聚合")
+            elif not all_clients_finished:
+                print(f"[SERVER] 尚有客户端未完成模型上传: {', '.join(unfinished_clients)}")
+                print(f"[SERVER] 活跃客户端: {list(active_clients)}")
+                print(f"[SERVER] 继续等待...")
     
     async def handle_data_collection(self, submission):
         """处理数据征收请求"""

@@ -183,11 +183,12 @@ class FederatedClient:
         )
         # 保存训练好的模型到训练模块
         self.training.local_models = local_models
-        # 训练完成后更新状态为完成
-        self.communication.send_status_update("finished", 1.0)
         
         # 10. 提交模型更新
         self.submit_model_updates()
+        
+        # 训练和模型上传完成后更新状态为完成
+        self.communication.send_status_update("finished", 1.0)
         
         print("\n" + "="*60)
         print("客户端流程完成！")
