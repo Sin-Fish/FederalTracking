@@ -460,20 +460,21 @@ class CommunicationModule:
             return False
     
     def check_readiness(self) -> Optional[Dict]:
-        """向服务器发送就位状态，检查模型是否需要更新"""
-        print(f"[CLIENT] 向服务器发送就位状态...")
+        """等待服务器发起就位检查，检查模型是否需要更新"""
+        print(f"[CLIENT] 等待服务器发起就位检查...")
         
         try:
+            # 发送请求到服务器的就位等待端点
             response = requests.get(
-                f"{self.server_url}/api/client/readiness-check",
+                f"{self.server_url}/api/client/wait-readiness-check",
                 params={"client_id": self.client_id},
-                timeout=self.request_timeout
+                timeout=35  # 35秒超时
             )
             
             if response.status_code == 200:
                 data = response.json()
-                if data.get("status") == "ready":
-                    print(f"[CLIENT] 就位检查成功: {data['message']}")
+                if data.get("status") == "ready_check":
+                    print(f"[CLIENT] 收到服务器就位检查指令: {data['message']}")
                     
                     # 检查是否需要更新模型
                     server_model_hash = data.get("model_hash")
@@ -486,7 +487,23 @@ class CommunicationModule:
                         else:
                             print("[CLIENT] 模型更新失败")
                     
+                    # 向服务器发送就位确认
+                    confirm_response = requests.post(
+                        f"{self.server_url}/api/client/confirm-readiness",
+                        params={"client_id": self.client_id},
+                        timeout=self.request_timeout
+                    )
+                    
+                    if confirm_response.status_code == 200:
+                        confirm_data = confirm_response.json()
+                        print(f"[CLIENT] {confirm_data['message']}")
+                    else:
+                        print(f"[CLIENT] 就位确认失败: {confirm_response.status_code}")
+                    
                     return data
+                elif data.get("status") == "timeout":
+                    print(f"[CLIENT] 等待就位检查超时")
+                    return None
                 else:
                     print(f"[CLIENT] 就位检查失败: {data}")
                     return None
@@ -495,7 +512,7 @@ class CommunicationModule:
                 return None
                 
         except requests.exceptions.Timeout:
-            print(f"[CLIENT] 就位检查超时")
+            print(f"[CLIENT] 等待就位检查超时")
             return None
         except Exception as e:
             print(f"[CLIENT] 就位检查时发生错误: {e}")

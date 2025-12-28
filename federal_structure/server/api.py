@@ -109,6 +109,60 @@ class FederatedServerAPI:
                 "model_available": self.core.embedding_model is not None
             }
         
+        @self.app.get("/api/client/wait-readiness-check")
+        async def wait_for_readiness_check(client_id: str = Query(..., description="客户端ID")):
+            """客户端等待服务器发起就位检查（长轮询）"""
+            # 检查客户端是否已注册
+            if client_id not in self.core.client_registry:
+                raise HTTPException(status_code=404, detail="客户端未注册")
+            
+            # 检查客户端是否在训练队列中
+            if client_id not in self.core.training_queue:
+                raise HTTPException(status_code=400, detail="客户端不在训练队列中")
+            
+            # 获取客户端的就位检查事件
+            event = self.core.readiness_check_events.get(client_id)
+            if not event:
+                raise HTTPException(status_code=500, detail="客户端就位检查事件未初始化")
+            
+            # 等待事件被设置（最多等待25秒）
+            try:
+                await asyncio.wait_for(event.wait(), timeout=25.0)
+                
+                # 返回就位检查信息
+                return {
+                    "status": "ready_check",
+                    "message": f"客户端 {client_id} 进行就位检查",
+                    "model_hash": self.core.embedding_model_hash,
+                    "model_available": self.core.embedding_model is not None
+                }
+            except asyncio.TimeoutError:
+                # 超时返回
+                return {
+                    "status": "timeout",
+                    "message": "等待就位检查指令超时"
+                }
+        
+        @self.app.post("/api/client/confirm-readiness")
+        async def confirm_readiness(client_id: str = Query(..., description="客户端ID")):
+            """客户端确认就位状态"""
+            # 检查客户端是否已注册
+            if client_id not in self.core.client_registry:
+                raise HTTPException(status_code=404, detail="客户端未注册")
+            
+            # 检查客户端是否在训练队列中
+            if client_id not in self.core.training_queue:
+                raise HTTPException(status_code=400, detail="客户端不在训练队列中")
+            
+            # 标记客户端已确认就位
+            self.core.client_registry[client_id]["readiness_confirmed"] = True
+            self.core.client_registry[client_id]["readiness_confirmed_at"] = datetime.now().isoformat()
+            
+            return {
+                "status": "confirmed",
+                "message": f"客户端 {client_id} 就位确认成功"
+            }
+        
         @self.app.post("/api/model/update")
         async def submit_update(update: ModelUpdate):
             """接收模型更新"""
