@@ -340,7 +340,18 @@ class FederatedServerCore:
     
     async def initiate_training(self):
         """启动联邦训练"""
-        # 首先检查所有客户端的就位状态
+        if len(self.training_queue) == 0:
+            raise HTTPException(status_code=400, detail="训练队列为空")
+        
+        print(f"[SERVER] 启动联邦训练，参与客户端: {len(self.training_queue)}")
+        
+        # 首先使用客户端发回的聚类中心进行第二次聚类，生成全局原型
+        await self.aggregate_client_prototypes()
+        
+        if self.global_prototypes is None:
+            raise HTTPException(status_code=400, detail="请先生成全局原型")
+        
+        # 然后检查所有客户端的就位状态
         ready_clients = await self.check_client_readiness()
         
         if len(ready_clients) == 0:
@@ -348,17 +359,6 @@ class FederatedServerCore:
                 "status": "error",
                 "message": "没有就位的客户端，无法开始训练"
             }
-        
-        # 使用客户端发回的聚类中心进行第二次聚类
-        await self.aggregate_client_prototypes()
-        
-        if self.global_prototypes is None:
-            raise HTTPException(status_code=400, detail="请先生成全局原型")
-        
-        if len(self.training_queue) == 0:
-            raise HTTPException(status_code=400, detail="训练队列为空")
-        
-        print(f"[SERVER] 启动联邦训练，参与客户端: {len(self.training_queue)}")
         
         # 重置模型更新池
         self.model_updates.clear()
@@ -428,48 +428,45 @@ class FederatedServerCore:
         ready_clients = []
         unresponsive_clients = []
         
-        for client_id in list(self.training_queue):  # 将deque转换为列表，避免在迭代时修改原队列
-            print(f"[SERVER] 检查客户端 {client_id} 就位状态...")
-            
-            # 重置客户端的就位检查事件
+        # 为每个客户端重置就位检查事件
+        for client_id in list(self.training_queue):
             if client_id in self.readiness_check_events:
                 self.readiness_check_events[client_id].clear()
+        
+        # 向所有客户端发送就位检查请求（通过设置事件，触发客户端的长轮询响应）
+        for client_id in list(self.training_queue):
+            print(f"[SERVER] 检查客户端 {client_id} 就位状态...")
             
-            # 发送就位检查信号到客户端
-            try:
-                # 发送就位检查信号
+            # 设置事件，通知客户端进行就位检查
+            if client_id in self.readiness_check_events:
+                self.readiness_check_events[client_id].set()
                 print(f"[SERVER] 已向客户端 {client_id} 发送就位检查信号")
+        
+        # 等待客户端响应（最多等待30秒）
+        print("[SERVER] 等待客户端响应就位检查...")
+        await asyncio.sleep(30.0)
+        
+        # 检查哪些客户端的事件被设置了（表示已确认就位）
+        for client_id in list(self.training_queue):
+            # 检查客户端是否仍然在队列中（即是否响应了就位检查）
+            if client_id in self.training_queue:
+                # 我们需要一种方式来知道客户端是否确认了就位
+                # 检查客户端注册表中是否有确认信息
+                client_info = self.client_registry.get(client_id, {})
                 
-                # 等待客户端响应（最多等待60秒）
-                event = self.readiness_check_events[client_id]
-                try:
-                    await asyncio.wait_for(event.wait(), timeout=60.0)
-                    
-                    # 更新客户端状态
-                    if client_id in self.client_registry:
-                        self.client_registry[client_id]["status"] = "ready"
-                        self.client_registry[client_id]["readiness_confirmed_at"] = datetime.now().isoformat()
-                    
+                if client_info.get("readiness_confirmed", False):
                     ready_clients.append(client_id)
-                    print(f"[SERVER] 客户端 {client_id} 状态更新: ready")
-                    
-                except asyncio.TimeoutError:
-                    print(f"[SERVER] 客户端 {client_id} 就位检查超时，从队列中移除")
+                    print(f"[SERVER] 客户端 {client_id} 已确认就位")
+                else:
+                    print(f"[SERVER] 客户端 {client_id} 未响应就位检查，从队列中移除")
+                    unresponsive_clients.append(client_id)
                     if client_id in self.training_queue:
                         self.training_queue.remove(client_id)
                     if client_id in self.client_registry:
                         self.client_registry[client_id]["in_queue"] = False
-                        self.client_registry[client_id]["status"] = "timeout"
-            
-            except Exception as e:
-                print(f"[SERVER] 检查客户端 {client_id} 就位状态时发生错误: {e}")
-                if client_id in self.training_queue:
-                    self.training_queue.remove(client_id)
-                if client_id in self.client_registry:
-                    self.client_registry[client_id]["in_queue"] = False
-                    self.client_registry[client_id]["status"] = "error"
+                        self.client_registry[client_id]["status"] = "offline"
         
-        print(f"[SERVER] 就位检查完成: {len(ready_clients)} 个客户端就位, {len(self.training_queue) - len(ready_clients)} 个客户端无响应")
+        print(f"[SERVER] 就位检查完成: {len(ready_clients)} 个客户端就位, {len(unresponsive_clients)} 个客户端无响应")
         return ready_clients
     
     async def notify_clients_training_start(self, training_info: Dict):
