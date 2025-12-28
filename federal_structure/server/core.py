@@ -428,6 +428,13 @@ class FederatedServerCore:
         ready_clients = []
         unresponsive_clients = []
         
+        # 清除之前的所有就位确认状态
+        for client_id in self.client_registry:
+            if "readiness_confirmed" in self.client_registry[client_id]:
+                del self.client_registry[client_id]["readiness_confirmed"]
+            if "readiness_confirmed_at" in self.client_registry[client_id]:
+                del self.client_registry[client_id]["readiness_confirmed_at"]
+        
         # 为每个客户端重置就位检查事件
         for client_id in list(self.training_queue):
             if client_id in self.readiness_check_events:
@@ -446,25 +453,26 @@ class FederatedServerCore:
         print("[SERVER] 等待客户端响应就位检查...")
         await asyncio.sleep(30.0)
         
-        # 检查哪些客户端的事件被设置了（表示已确认就位）
+        # 检查哪些客户端已经确认就位
         for client_id in list(self.training_queue):
-            # 检查客户端是否仍然在队列中（即是否响应了就位检查）
-            if client_id in self.training_queue:
-                # 我们需要一种方式来知道客户端是否确认了就位
-                # 检查客户端注册表中是否有确认信息
-                client_info = self.client_registry.get(client_id, {})
+            client_info = self.client_registry.get(client_id, {})
+            
+            # 检查客户端是否确认了就位
+            if client_info.get("readiness_confirmed", False):
+                ready_clients.append(client_id)
+                print(f"[SERVER] 客户端 {client_id} 已确认就位")
                 
-                if client_info.get("readiness_confirmed", False):
-                    ready_clients.append(client_id)
-                    print(f"[SERVER] 客户端 {client_id} 已确认就位")
-                else:
-                    print(f"[SERVER] 客户端 {client_id} 未响应就位检查，从队列中移除")
-                    unresponsive_clients.append(client_id)
-                    if client_id in self.training_queue:
-                        self.training_queue.remove(client_id)
-                    if client_id in self.client_registry:
-                        self.client_registry[client_id]["in_queue"] = False
-                        self.client_registry[client_id]["status"] = "offline"
+                # 更新客户端状态为就绪
+                if client_id in self.client_registry:
+                    self.client_registry[client_id]["status"] = "ready"
+            else:
+                print(f"[SERVER] 客户端 {client_id} 未响应就位检查，从队列中移除")
+                unresponsive_clients.append(client_id)
+                if client_id in self.training_queue:
+                    self.training_queue.remove(client_id)
+                if client_id in self.client_registry:
+                    self.client_registry[client_id]["in_queue"] = False
+                    self.client_registry[client_id]["status"] = "offline"
         
         print(f"[SERVER] 就位检查完成: {len(ready_clients)} 个客户端就位, {len(unresponsive_clients)} 个客户端无响应")
         return ready_clients

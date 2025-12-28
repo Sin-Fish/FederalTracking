@@ -55,7 +55,7 @@ class TrainingModule:
         
         return X, y
     
-    def train_local_models(self, behavior_embeddings: np.ndarray, prototype_mapping: np.ndarray):
+    def train_local_models(self, behavior_embeddings: np.ndarray, prototype_mapping: Dict[int, List[int]]):
         """为每个原型训练本地模型"""
         print(f"[CLIENT] 开始本地训练...")
         
@@ -64,7 +64,7 @@ class TrainingModule:
         print(f"[CLIENT] 嵌入维度: {embedding_dim}")
         
         # 获取原型数量
-        num_prototypes = len(np.unique(prototype_mapping))
+        num_prototypes = len(prototype_mapping)
         print(f"[CLIENT] 将为 {num_prototypes} 个原型训练模型")
         
         if num_prototypes == 0:
@@ -73,11 +73,11 @@ class TrainingModule:
         
         local_models = {}
         
-        for prototype_id in range(num_prototypes):
+        for prototype_id in prototype_mapping:
             print(f"[CLIENT] 正在训练原型 {prototype_id} 的模型...")
             
             # 获取属于当前原型的行为索引
-            prototype_indices = np.where(prototype_mapping == prototype_id)[0]
+            prototype_indices = prototype_mapping[prototype_id]
             
             if len(prototype_indices) == 0:
                 print(f"[CLIENT] 原型 {prototype_id} 没有分配的行为数据，跳过训练")
