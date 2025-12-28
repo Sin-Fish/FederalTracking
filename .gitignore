@@ -109,3 +109,4 @@ Thumbs.db
 pack/
 data/
 models/
+model_cache/

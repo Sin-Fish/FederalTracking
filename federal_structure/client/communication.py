@@ -437,19 +437,61 @@ class CommunicationModule:
             print(f"[CLIENT] 状态更新失败: {e}")
             return False
     
-    def wait_for_training_start(self, timeout: int = 300) -> Optional[Dict]:
-        """
-        长轮询等待服务器训练开始指令
-        服务器将保持连接直到有训练指令或超时
-        """
-        print(f"[CLIENT] 等待服务器训练开始指令 (最长 {timeout} 秒)...")
+    def check_readiness(self) -> Optional[Dict]:
+        """向服务器发送就位状态，检查模型是否需要更新"""
+        print(f"[CLIENT] 向服务器发送就位状态...")
         
         try:
-            # 发送请求，服务器将保持连接直到有指令或超时
+            response = requests.get(
+                f"{self.server_url}/api/client/readiness-check",
+                params={"client_id": self.client_id},
+                timeout=self.request_timeout
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "ready":
+                    print(f"[CLIENT] 就位检查成功: {data['message']}")
+                    
+                    # 检查是否需要更新模型
+                    server_model_hash = data.get("model_hash")
+                    if server_model_hash and not self.check_local_model(server_model_hash):
+                        print("[CLIENT] 检测到模型版本不匹配，开始下载新模型...")
+                        if self._download_model_from_server(self.model_name):
+                            # 重新加载模型
+                            self._load_embedding_model(self.model_name)
+                            print("[CLIENT] 模型更新完成")
+                        else:
+                            print("[CLIENT] 模型更新失败")
+                    
+                    return data
+                else:
+                    print(f"[CLIENT] 就位检查失败: {data}")
+                    return None
+            else:
+                print(f"[CLIENT] 就位检查请求失败: {response.status_code}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            print(f"[CLIENT] 就位检查超时")
+            return None
+        except Exception as e:
+            print(f"[CLIENT] 就位检查时发生错误: {e}")
+            return None
+    
+    def wait_for_training_start(self) -> Optional[Dict]:
+        """
+        长轮询等待服务器训练开始指令
+        服务器将保持连接直到有训练指令
+        """
+        print(f"[CLIENT] 等待服务器训练开始指令...")
+        
+        try:
+            # 发送请求，服务器将保持连接直到有指令
             response = requests.get(
                 f"{self.server_url}/api/training/wait",
                 params={"client_id": self.client_id},
-                timeout=timeout+10  # 设置比等待时间稍长的超时
+                timeout=3600  # 设置为1小时超时，允许手动中断
             )
             
             if response.status_code == 200:
@@ -475,7 +517,10 @@ class CommunicationModule:
                 return None
                 
         except requests.exceptions.Timeout:
-            print(f"[CLIENT] 等待训练指令超时 ({timeout}秒)")
+            print(f"[CLIENT] 等待训练指令超时")
+            return None
+        except KeyboardInterrupt:
+            print(f"[CLIENT] 用户中断等待训练指令")
             return None
         except Exception as e:
             print(f"[CLIENT] 等待训练指令时发生错误: {e}")

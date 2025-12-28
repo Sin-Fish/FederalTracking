@@ -41,6 +41,7 @@ class FederatedServerCore:
         
         # 训练状态跟踪
         self.training_start_events: Dict[str, asyncio.Event] = {}  # 用于跟踪客户端训练开始事件
+        self.readiness_check_events: Dict[str, asyncio.Event] = {}  # 用于跟踪客户端就位检查事件
         
         # 初始化时尝试加载本地模型
         self._initialize_embedding_model()
@@ -52,11 +53,20 @@ class FederatedServerCore:
         
         print(f"[SERVER] 初始化嵌入模型...")
         
+        # 检查是否可以导入SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as e:
+            print(f"[SERVER] 无法导入SentenceTransformer: {e}")
+            print("[SERVER] 请运行 'pip install -r requirements.txt' 安装依赖")
+            raise HTTPException(
+                status_code=500,
+                detail=f"无法导入SentenceTransformer: {e}"
+            )
+        
         if os.path.exists(model_dir):
             try:
                 print(f"[SERVER] 从本地加载模型: {model_dir}")
-                # 延迟导入，避免启动时就加载sentence_transformers
-                from sentence_transformers import SentenceTransformer
                 self.embedding_model = SentenceTransformer(model_dir)
                 
                 # 计算并存储模型哈希
@@ -77,7 +87,7 @@ class FederatedServerCore:
             models_dir = "./models"
             os.makedirs(models_dir, exist_ok=True)
             
-            # 延迟导入，避免启动时就加载sentence_transformers
+            # 检查是否可以导入SentenceTransformer
             from sentence_transformers import SentenceTransformer
             
             # 下载模型
@@ -131,8 +141,9 @@ class FederatedServerCore:
         
         self.client_registry[client_id] = client_info
         
-        # 为客户端创建训练开始事件
+        # 为客户端创建训练开始事件和就位检查事件
         self.training_start_events[client_id] = asyncio.Event()
+        self.readiness_check_events[client_id] = asyncio.Event()
         
         # 验证数据格式（这里可以添加更复杂的验证逻辑）
         if req.sample_count < 100:
@@ -222,24 +233,14 @@ class FederatedServerCore:
             print("[SERVER] 错误：嵌入模型未加载")
             return {"status": "model_not_loaded"}
         
-        # 延迟导入 ML 依赖
-        try:
-            from sentence_transformers import SentenceTransformer
-            from sklearn.cluster import KMeans
-            from collections import Counter
-        except ImportError as e:
-            print(f"[SERVER] 缺少必要的机器学习依赖: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail="服务器缺少必要的机器学习库"
-            )
-        
         # 转换为向量
         print(f"[SERVER] 正在嵌入 {len(all_samples)} 个行为样本...")
         embeddings = self.embedding_model.encode(all_samples, show_progress_bar=False)
         
         # K-Means聚类生成原型
         print(f"[SERVER] 正在聚类生成 {self.n_prototypes} 个全局原型...")
+        from sklearn.cluster import KMeans
+        from collections import Counter
         kmeans = KMeans(n_clusters=self.n_prototypes, random_state=42, n_init=10)
         cluster_labels = kmeans.fit_predict(embeddings)
         
@@ -289,6 +290,15 @@ class FederatedServerCore:
         
         print(f"[SERVER] 启动联邦训练，参与客户端: {len(self.training_queue)}")
         
+        # 首先检查所有客户端的就位状态
+        ready_clients = await self.check_client_readiness()
+        
+        if len(ready_clients) == 0:
+            return {
+                "status": "error",
+                "message": "没有就位的客户端，无法开始训练"
+            }
+        
         # 重置模型更新池
         self.model_updates.clear()
         
@@ -302,31 +312,75 @@ class FederatedServerCore:
                 "hidden_size": 128,
                 "output_size": 100
             },
-            "clients": list(self.training_queue)
+            "clients": ready_clients
         }
         
         # 更新客户端状态
-        for client_id in self.training_queue:
+        for client_id in ready_clients:
             if client_id in self.client_registry:
                 self.client_registry[client_id]["status"] = "training"
                 self.client_registry[client_id]["progress"] = 0.0
                 self.client_registry[client_id]["training_round"] += 1
         
-        # 主动向所有客户端发送训练开始指令
+        # 主动向所有就位的客户端发送训练开始指令
         await self.notify_clients_training_start(training_info)
         
         return {
             "status": "training_started",
-            "client_count": len(self.training_queue),
+            "client_count": len(ready_clients),
             "training_info": training_info
         }
     
+    async def check_client_readiness(self) -> List[str]:
+        """检查所有队列中客户端的就位状态"""
+        print(f"[SERVER] 检查 {len(self.training_queue)} 个客户端的就位状态...")
+        
+        ready_clients = []
+        unresponsive_clients = []
+        
+        # 为每个客户端重置就位检查事件
+        for client_id in list(self.training_queue):
+            if client_id in self.readiness_check_events:
+                self.readiness_check_events[client_id].clear()
+        
+        # 向所有客户端发送就位检查请求
+        for client_id in list(self.training_queue):
+            print(f"[SERVER] 检查客户端 {client_id} 就位状态...")
+            
+            # 模拟向客户端发送就位检查请求，实际实现中这需要客户端API
+            # 这里我们等待客户端响应，超时则认为客户端无响应
+            try:
+                # 在实际实现中，这里会发送一个HTTP请求到客户端的就位检查端点
+                # 为了演示，我们使用一个异步延时来模拟网络请求
+                await asyncio.wait_for(
+                    self.readiness_check_events[client_id].wait(), 
+                    timeout=10.0  # 10秒超时
+                )
+                
+                # 检查客户端是否仍然在队列中
+                if client_id in self.training_queue:
+                    ready_clients.append(client_id)
+                    print(f"[SERVER] 客户端 {client_id} 就位")
+                else:
+                    print(f"[SERVER] 客户端 {client_id} 已从队列中移除")
+                    
+            except asyncio.TimeoutError:
+                print(f"[SERVER] 客户端 {client_id} 无响应，从队列中移除")
+                unresponsive_clients.append(client_id)
+                if client_id in self.training_queue:
+                    self.training_queue.remove(client_id)
+                if client_id in self.client_registry:
+                    self.client_registry[client_id]["in_queue"] = False
+        
+        print(f"[SERVER] 就位检查完成: {len(ready_clients)} 个客户端就位, {len(unresponsive_clients)} 个客户端无响应")
+        return ready_clients
+    
     async def notify_clients_training_start(self, training_info: Dict):
         """主动向所有客户端发送训练开始指令"""
-        print(f"[SERVER] 向 {len(self.training_queue)} 个客户端发送训练开始指令...")
+        print(f"[SERVER] 向 {len(training_info['clients'])} 个客户端发送训练开始指令...")
         
         # 为每个客户端设置训练开始事件
-        for client_id in self.training_queue:
+        for client_id in training_info['clients']:
             if client_id in self.client_registry:
                 if client_id in self.training_start_events:
                     # 设置事件，通知客户端训练已开始
@@ -471,7 +525,7 @@ class FederatedServerCore:
         os.makedirs(models_dir, exist_ok=True)
         
         try:
-            # 延迟导入，避免启动时就加载sentence_transformers
+            # 检查是否可以导入SentenceTransformer
             from sentence_transformers import SentenceTransformer
             
             # 注意：这个下载是在服务器端进行的

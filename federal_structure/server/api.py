@@ -83,6 +83,32 @@ class FederatedServerAPI:
                     "message": "等待训练指令超时"
                 }
         
+        @self.app.get("/api/client/readiness-check")
+        async def readiness_check(client_id: str = Query(..., description="客户端ID")):
+            """服务器检查客户端就位状态的端点"""
+            # 检查客户端是否已注册
+            if client_id not in self.core.client_registry:
+                raise HTTPException(status_code=404, detail="客户端未注册")
+            
+            # 检查客户端是否在训练队列中
+            if client_id not in self.core.training_queue:
+                raise HTTPException(status_code=400, detail="客户端不在训练队列中")
+            
+            # 获取客户端的就位检查事件
+            event = self.core.readiness_check_events.get(client_id)
+            if not event:
+                raise HTTPException(status_code=500, detail="客户端就位检查事件未初始化")
+            
+            # 设置事件，表示客户端已就位
+            event.set()
+            
+            return {
+                "status": "ready",
+                "message": f"客户端 {client_id} 已就位",
+                "model_hash": self.core.embedding_model_hash,
+                "model_available": self.core.embedding_model is not None
+            }
+        
         @self.app.post("/api/model/update")
         async def submit_update(update: ModelUpdate):
             """接收模型更新"""

@@ -136,7 +136,16 @@ class FederatedClient:
         else:
             print("[CLIENT] 高频数据提交成功")
         
-        # 6. 等待训练开始信号（在此之前服务器会完成原型生成）
+        # 6. 等待服务器发起就位检查
+        print("[CLIENT] 等待服务器发起就位检查...")
+        readiness_response = self.communication.check_readiness()
+        if not readiness_response:
+            print("[CLIENT] 就位检查失败，退出流程")
+            return
+        
+        print("[CLIENT] 就位检查完成")
+        
+        # 7. 等待训练开始信号（在此之前服务器会完成原型生成）
         print("[CLIENT] 等待服务器训练开始指令...")
         training_info = self.communication.wait_for_training_start()
         if not training_info:

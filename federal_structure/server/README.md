@@ -2,6 +2,14 @@
 
 联邦学习服务器用于协调多个客户端共同训练机器学习模型，同时保护各客户端的数据隐私。
 
+curl -X GET "http://localhost:8000/api/training/start"
+
+Invoke-WebRequest -Uri "http://localhost:8000/api/training/start" -Method GET
+
+http://localhost:8000/api/training/start
+
+开始训练
+
 ## 功能特性
 
 - **客户端管理**：注册、状态监控、心跳检测
