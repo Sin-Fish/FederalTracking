@@ -136,7 +136,7 @@ class ActivityCollector:
         self.scroll_buffer = None
         self.scroll_buffer_env = None
         self.scroll_aggregation_timer = None
-        self.SCROLL_AGGREGATION_TIMEOUT = 0.5  # 0.5秒内连续滚动视为一次滚动
+        self.SCROLL_AGGREGATION_TIMEOUT = 3  # 3秒内连续滚动视为一次滚动
 
         # Ctrl键状态
         self.ctrl_pressed = False
@@ -400,7 +400,7 @@ class ActivityCollector:
         print("\n" + "="*50)
         print("开始采集电脑操作数据...")
         print("提示: 采集期间请正常使用电脑")
-        print("      按 'Esc' 键可停止采集")
+        print("      按 'Esc+Ctrl' 键可停止采集")
         print("="*50 + "\n")
 
         self.is_collecting = True

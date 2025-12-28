@@ -16,3 +16,5 @@ python activity_collector.py
 每次事件都会记录当前窗口标题和应用进程名
 
 控制台会每10次事件输出一次统计信息
+
+按Ctrl+Esc退出结束采集
