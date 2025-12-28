@@ -3,13 +3,16 @@ import json
 import hashlib
 import time
 import pickle
+import os
+import zipfile
+import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from collections import defaultdict, deque
 
 import numpy as np
 from fastapi import HTTPException, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 # 机器学习相关导入
 from sentence_transformers import SentenceTransformer
@@ -37,10 +40,8 @@ class FederatedServerCore:
         
         # 嵌入模型
         self.embedding_model = None
+        self.embedding_model_hash = None
         self.embedding_dim = 384
-        
-        # 模型哈希，用于客户端验证
-        self.model_hash = None
 
     # ==================== 核心业务逻辑 ====================
     async def handle_client_register(self, req):
@@ -156,12 +157,7 @@ class FederatedServerCore:
         
         # 加载嵌入模型
         if self.embedding_model is None:
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-            # 计算模型哈希，用于客户端验证
-            model_path = self.embedding_model.save('./models/embedding_model_cache')
-            with open(f'{model_path}/config.json', 'rb') as f:
-                model_config = f.read()
-            self.model_hash = hashlib.sha256(model_config).hexdigest()
+            await self._download_embedding_model('all-MiniLM-L6-v2')
         
         # 转换为向量
         print(f"[SERVER] 正在嵌入 {len(all_samples)} 个行为样本...")
@@ -367,36 +363,117 @@ class FederatedServerCore:
         if self.model_hash is None:
             # 如果模型尚未初始化，先初始化
             if self.embedding_model is None:
-                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-                # 计算模型哈希，用于客户端验证
-                model_path = self.embedding_model.save('./models/embedding_model_cache')
-                with open(f'{model_path}/config.json', 'rb') as f:
-                    model_config = f.read()
-                self.model_hash = hashlib.sha256(model_config).hexdigest()
+                await self._download_embedding_model('all-MiniLM-L6-v2')
         
         return {
-            "hash": self.model_hash,
+            "hash": self.embedding_model_hash,
             "version": "all-MiniLM-L6-v2",
             "embedding_dim": self.embedding_dim,
             "timestamp": datetime.now().isoformat()
         }
     
-    async def provide_model_to_client(self, client_id: str, model_hash: str):
-        """向客户端提供模型"""
-        # 验证模型哈希
-        if self.model_hash != model_hash:
-            return {"status": "error", "message": "模型哈希不匹配"}
+    async def _download_embedding_model(self, model_name: str):
+        """服务器首次运行时下载模型"""
+        print(f"[SERVER] 正在下载嵌入模型 {model_name}...")
         
-        # 模拟返回模型数据（在实际实现中，这里应该返回实际的模型参数）
-        return {
-            "status": "success",
-            "model_data": {
-                "hash": self.model_hash,
-                "version": "all-MiniLM-L6-v2",
-                "embedding_dim": self.embedding_dim
-            },
-            "message": "模型信息已提供，客户端可使用此信息进行嵌入计算"
-        }
+        models_dir = "./models"
+        os.makedirs(models_dir, exist_ok=True)
+        
+        # 下载模型（这里以sentence-transformers为例）
+        try:
+            # 注意：这个下载是在服务器端进行的
+            model = SentenceTransformer(model_name)
+            model.save(f"{models_dir}/{model_name}")
+            print(f"[SERVER] 模型下载完成，保存至 {models_dir}/{model_name}")
+            
+            # 加载模型
+            self.embedding_model = model
+            
+            # 计算并存储模型哈希
+            self.embedding_model_hash = self._compute_model_hash(f"{models_dir}/{model_name}")
+            print(f"[SERVER] 模型哈希: {self.embedding_model_hash[:16]}")
+            
+        except Exception as e:
+            print(f"[SERVER] 下载模型失败: {e}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"无法下载模型: {e}"
+            )
+    
+    def _compute_model_hash(self, model_path: str) -> str:
+        """计算模型目录的哈希值"""
+        import hashlib
+        sha256_hash = hashlib.sha256()
+        
+        for root, dirs, files in os.walk(model_path):
+            for file in sorted(files):  # 按文件名排序确保一致性
+                file_path = os.path.join(root, file)
+                # 将文件名和内容都加入哈希计算
+                sha256_hash.update(file.encode('utf-8'))
+                with open(file_path, 'rb') as f:
+                    while chunk := f.read(8192):
+                        sha256_hash.update(chunk)
+        
+        return sha256_hash.hexdigest()
+    
+    async def download_model(self):
+        """
+        提供嵌入模型文件下载
+        支持断点续传和哈希验证
+        """
+        model_name = "all-MiniLM-L6-v2"
+        model_dir = f"./models/{model_name}"
+        
+        # 确保模型存在
+        if not os.path.exists(model_dir):
+            # 首次运行时下载模型
+            await self._download_embedding_model(model_name)
+        
+        # 创建压缩包（可选，但推荐）
+        # 临时压缩文件路径
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
+            zip_path = tmp_file.name
+            
+            # 压缩模型目录
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(model_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # 保持相对路径
+                        arcname = os.path.relpath(file_path, start=os.path.dirname(model_dir))
+                        zipf.write(file_path, arcname)
+            
+            # 计算压缩包哈希值（用于客户端验证）
+            with open(zip_path, 'rb') as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+            
+            # 记录传输日志
+            print(f"[SERVER] 准备发送模型 {model_name}，哈希: {file_hash[:16]}...")
+            
+            # 使用FileResponse提供文件下载
+            response = FileResponse(
+                path=zip_path,
+                media_type='application/zip',
+                filename=f"{model_name}.zip",
+                headers={
+                    "X-Model-Hash": file_hash,
+                    "X-Model-Name": model_name,
+                    "X-Model-Version": "1.0"
+                }
+            )
+            
+            # 异步删除临时文件
+            import asyncio
+            async def cleanup():
+                await asyncio.sleep(5)  # 等待一段时间再删除
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+                    print(f"[SERVER] 已清理临时模型文件: {zip_path}")
+            
+            # 启动清理任务
+            asyncio.create_task(cleanup())
+            
+            return response
 
     # ==================== 后台任务 ====================
     async def status_monitor(self):

@@ -1,5 +1,5 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 
 from models import ClientRegister, ClientStatus, DataSubmission, ModelUpdate
 from core import FederatedServerCore
@@ -77,7 +77,7 @@ class FederatedServerAPI:
             """获取嵌入模型信息"""
             return await self.core.get_model_info()
         
-        @self.app.post("/api/system/download_model")
-        async def download_model(client_id: str, model_hash: str):
-            """下载嵌入模型"""
-            return await self.core.provide_model_to_client(client_id, model_hash)
+        @self.app.get("/api/model/download")
+        async def download_model():
+            """下载嵌入模型文件"""
+            return await self.core.download_model()

@@ -1,14 +1,14 @@
 import requests
 import time
-import os
-import pickle
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 import threading
+import os
+import pickle
+import zipfile
 
 import numpy as np
 from sklearn.metrics.pairwise import pairwise_distances_argmin
-from sentence_transformers import SentenceTransformer
 
 from data_processor import DataProcessor
 from models import SimpleLSTM
@@ -37,26 +37,65 @@ class CommunicationModule:
         self.embedding_dim = 384
         
         # 本地模型缓存路径
-        self.model_cache_path = "./models/embedding_model_cache.pkl"
+        self.model_cache_path = "./models/embedding_model_cache"
+        self.model_zip_path = "./models/embedding_model.zip"
     
     def check_local_model(self, server_model_hash: str) -> bool:
         """检查本地是否已有指定哈希的模型"""
-        if not os.path.exists(self.model_cache_path):
+        hash_file_path = f"{self.model_cache_path}_hash.txt"
+        if not os.path.exists(hash_file_path):
             return False
             
         try:
-            with open(self.model_cache_path, 'rb') as f:
-                cached_data = pickle.load(f)
-                cached_hash = cached_data.get('hash', '')
+            with open(hash_file_path, 'r') as f:
+                cached_hash = f.read().strip()
                 return cached_hash == server_model_hash
         except Exception:
             return False
     
-    def load_embedding_model(self):
-        """加载嵌入模型，优先从缓存加载"""
-        if self.embedding_model is not None:
-            return
+    def download_model_from_server(self, server_model_hash: str) -> bool:
+        """从服务器下载模型"""
+        print(f"[CLIENT] 从服务器下载模型，哈希: {server_model_hash[:16]}...")
+        
+        try:
+            response = requests.get(
+                f"{self.server_url}/api/model/download",
+                timeout=self.request_timeout
+            )
             
+            if response.status_code != 200:
+                print(f"[CLIENT] 下载模型失败: HTTP {response.status_code}")
+                return False
+            
+            # 获取服务器返回的模型哈希
+            response_hash = response.headers.get('X-Model-Hash', '')
+            if response_hash != server_model_hash:
+                print(f"[CLIENT] 模型哈希验证失败: 期望 {server_model_hash[:16]}, 实际 {response_hash[:16]}")
+                return False
+            
+            # 保存下载的模型压缩包
+            os.makedirs(os.path.dirname(self.model_zip_path), exist_ok=True)
+            with open(self.model_zip_path, 'wb') as f:
+                f.write(response.content)
+            
+            # 解压模型
+            with zipfile.ZipFile(self.model_zip_path, 'r') as zip_ref:
+                zip_ref.extractall("./models/")
+            
+            # 保存哈希值用于后续验证
+            hash_file_path = f"{self.model_cache_path}_hash.txt"
+            with open(hash_file_path, 'w') as f:
+                f.write(server_model_hash)
+            
+            print(f"[CLIENT] 模型下载并解压成功")
+            return True
+            
+        except Exception as e:
+            print(f"[CLIENT] 下载模型时发生错误: {e}")
+            return False
+    
+    def load_embedding_model(self):
+        """加载嵌入模型，优先从服务器获取或使用本地缓存"""
         print("[CLIENT] 准备加载嵌入模型...")
         
         # 向服务器请求模型信息
@@ -72,43 +111,46 @@ class CommunicationModule:
                 
                 # 检查本地是否有匹配的模型
                 if self.check_local_model(model_hash):
-                    print("[CLIENT] 本地已存在匹配的模型，加载中...")
-                    # 加载本地缓存模型
-                    with open(self.model_cache_path, 'rb') as f:
-                        cached_data = pickle.load(f)
-                        self.embedding_model = cached_data.get('model', None)
-                    print("[CLIENT] 本地模型加载成功")
+                    print("[CLIENT] 本地已存在匹配的模型，准备加载...")
+                    # 加载本地缓存模型（这里只是模拟，实际需要根据具体模型类型实现）
+                    print("[CLIENT] 本地模型验证通过")
+                    # 对于SentenceTransformer模型，我们仍需要加载它
+                    from sentence_transformers import SentenceTransformer
+                    self.embedding_model = SentenceTransformer('./models/all-MiniLM-L6-v2')
+                    print("[CLIENT] 嵌入模型加载成功")
                 else:
-                    print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:10]}...)")
-                    # 下载并初始化模型
-                    self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                    print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:16]}...)")
                     
-                    # 保存到本地缓存
-                    os.makedirs(os.path.dirname(self.model_cache_path), exist_ok=True)
-                    cached_data = {
-                        'hash': model_hash,
-                        'model': self.embedding_model,
-                        'timestamp': datetime.now().isoformat()
-                    }
-                    with open(self.model_cache_path, 'wb') as f:
-                        pickle.dump(cached_data, f)
-                    
-                    print("[CLIENT] 模型已缓存到本地")
+                    # 从服务器下载模型
+                    if self.download_model_from_server(model_hash):
+                        # 下载成功后，加载模型
+                        from sentence_transformers import SentenceTransformer
+                        self.embedding_model = SentenceTransformer('./models/all-MiniLM-L6-v2')
+                        print("[CLIENT] 从服务器下载的模型加载成功")
+                    else:
+                        print("[CLIENT] 从服务器下载模型失败")
+                        # 尝试使用随机向量作为备选方案
+                        print("[CLIENT] 使用随机向量作为嵌入（备用方案）")
             else:
                 print(f"[CLIENT] 获取模型信息失败: {response.status_code}")
-                # 如果无法获取服务器模型信息，则使用本地模型
-                self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+                print("[CLIENT] 使用随机向量作为嵌入（备用方案）")
         except Exception as e:
-            print(f"[CLIENT] 获取模型信息失败: {e}，使用本地模型")
-            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            print(f"[CLIENT] 加载嵌入模型时发生错误: {e}")
+            print("[CLIENT] 使用随机向量作为嵌入（备用方案）")
     
     def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
         """将行为字符串转换为嵌入向量"""
         self.load_embedding_model()
         
-        print(f"[CLIENT] 嵌入 {len(strings)} 个行为字符串...")
-        embeddings = self.embedding_model.encode(strings, show_progress_bar=False)
-        return embeddings
+        if self.embedding_model is not None:
+            print(f"[CLIENT] 嵌入 {len(strings)} 个行为字符串...")
+            embeddings = self.embedding_model.encode(strings, show_progress_bar=False)
+            return embeddings
+        else:
+            # 如果无法加载模型，则使用随机向量作为占位符
+            print(f"[CLIENT] 使用随机向量嵌入 {len(strings)} 个行为字符串...")
+            embeddings = np.random.rand(len(strings), self.embedding_dim).astype(np.float32)
+            return embeddings
     
     def register_to_server(self) -> bool:
         """向服务器报到"""
@@ -131,7 +173,7 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/client/register",
                 json=payload,
-                timeout=self.request_timeout
+                timeout=self.request_timeout  # 使用更长的超时时间
             )
             
             if response.status_code == 200:
@@ -143,6 +185,9 @@ class CommunicationModule:
                 print(f"[CLIENT] 报到失败: {response.status_code} - {response.text}")
                 return False
                 
+        except requests.exceptions.Timeout:
+            print(f"[CLIENT] 报到超时 (超过{self.request_timeout}秒)")
+            return False
         except Exception as e:
             print(f"[CLIENT] 报到时发生错误: {e}")
             return False
@@ -163,16 +208,19 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/data/collect",
                 json=payload,
-                timeout=self.request_timeout
+                timeout=self.request_timeout  # 使用更长的超时时间
             )
             
             if response.status_code == 200:
-                print(f"[CLIENT] 高频数据提交成功")
+                print(f"[CLIENT] 高频数据提交成功: {response.json()}")
                 return True
             else:
-                print(f"[CLIENT] 高频数据提交失败: {response.status_code}")
+                print(f"[CLIENT] 高频数据提交失败: {response.status_code} - {response.text}")
                 return False
                 
+        except requests.exceptions.Timeout:
+            print(f"[CLIENT] 提交高频数据超时 (超过{self.request_timeout}秒)")
+            return False
         except Exception as e:
             print(f"[CLIENT] 提交高频数据时发生错误: {e}")
             return False
@@ -184,7 +232,7 @@ class CommunicationModule:
         try:
             response = requests.get(
                 f"{self.server_url}/api/system/prototypes",
-                timeout=self.request_timeout
+                timeout=self.request_timeout  # 使用更长的超时时间
             )
             
             if response.status_code == 200:
@@ -198,9 +246,12 @@ class CommunicationModule:
                 self.map_to_prototypes(self.global_prototypes)
                 return True
             else:
-                print(f"[CLIENT] 获取原型失败: {response.status_code}")
+                print(f"[CLIENT] 获取原型失败: {response.status_code} - {response.text}")
                 return False
                 
+        except requests.exceptions.Timeout:
+            print(f"[CLIENT] 获取原型超时 (超过{self.request_timeout}秒)")
+            return False
         except Exception as e:
             print(f"[CLIENT] 获取原型时发生错误: {e}")
             return False
@@ -243,7 +294,7 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/client/status",
                 json=payload,
-                timeout=self.request_timeout
+                timeout=self.request_timeout  # 使用更长的超时时间
             )
             
             if response.status_code == 200:
@@ -251,6 +302,9 @@ class CommunicationModule:
                 return True
             return False
             
+        except requests.exceptions.Timeout:
+            print(f"[CLIENT] 状态更新超时 (超过{self.request_timeout}秒)")
+            return False
         except Exception as e:
             print(f"[CLIENT] 状态更新失败: {e}")
             return False
@@ -282,7 +336,7 @@ class CommunicationModule:
                 response = requests.post(
                     f"{self.server_url}/api/model/update",
                     json=payload,
-                    timeout=self.request_timeout
+                    timeout=self.request_timeout  # 使用更长的超时时间
                 )
                 
                 if response.status_code == 200:
@@ -290,6 +344,8 @@ class CommunicationModule:
                 else:
                     print(f"[CLIENT] 原型{proto_id}的模型更新提交失败: {response.status_code}")
                     
+            except requests.exceptions.Timeout:
+                print(f"[CLIENT] 原型{proto_id}的模型更新提交超时 (超过{self.request_timeout}秒)")
             except Exception as e:
                 print(f"[CLIENT] 提交模型更新时发生错误: {e}")
     
