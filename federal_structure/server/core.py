@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, FileResponse
 
 # 机器学习相关导入（延迟导入）
 from ml_models import SimpleLSTM
-from models import ModelUpdate
+from models import ModelUpdate, ClientStatus
 
 
 class FederatedServerCore:
@@ -46,6 +46,11 @@ class FederatedServerCore:
         # 存储客户端聚类中心
         self.client_prototypes: Dict[str, np.ndarray] = {}  # 存储客户端发回的聚类中心
         self.pending_clients_for_aggregation: set = set()  # 等待聚合的客户端
+        
+        # 跟踪客户端训练完成状态
+        self.client_finished_prototypes: Dict[str, set] = defaultdict(set)  # 跟踪每个客户端已完成的原型
+        self.client_training_status: Dict[str, str] = {}  # 跟踪客户端当前状态（training/finished等）
+        self.client_expected_prototypes_count: Dict[str, int] = {}  # 记录每个客户端应该完成的原型数量
         
         # 初始化时尝试加载本地模型
         self._initialize_embedding_model()
@@ -232,7 +237,7 @@ class FederatedServerCore:
             "n_prototypes": self.n_prototypes
         }
     
-    async def handle_status_update(self, status_update):
+    async def handle_status_update(self, status_update: ClientStatus):
         """处理客户端状态更新"""
         client_id = status_update.client_id
         
@@ -252,9 +257,47 @@ class FederatedServerCore:
             client["in_queue"] = False
             if client_id in self.training_queue:
                 self.training_queue.remove(client_id)
+            
+            # 检查是否所有客户端都已完成训练和模型上传
+            if status_update.status == "finished":
+                await self.check_all_clients_finished()
         
         print(f"[SERVER] 客户端 {client_id} 状态更新: {status_update.status}")
         return {"status": "updated"}
+    
+    async def check_all_clients_finished(self):
+        """检查是否所有客户端都已完成训练和模型上传，如果是则触发聚合"""
+        # 获取所有曾经上传过原型的客户端
+        clients_with_prototypes = set(self.client_expected_prototypes_count.keys())
+        
+        # 检查这些客户端是否都完成了相应数量的模型上传
+        all_clients_finished = True
+        for client_id in clients_with_prototypes:
+            expected_count = self.client_expected_prototypes_count[client_id]
+            actual_uploaded = len(self.client_finished_prototypes[client_id])
+            
+            if actual_uploaded < expected_count:
+                all_clients_finished = False
+                print(f"[SERVER] 客户端 {client_id} 尚未完成所有模型上传 ({actual_uploaded}/{expected_count})")
+                break
+        
+        if all_clients_finished and len(clients_with_prototypes) > 0:
+            print(f"[SERVER] 所有 {len(clients_with_prototypes)} 个客户端已完成训练和模型上传，准备聚合")
+            # 检查是否每个原型都有至少一个更新
+            all_prototypes_have_updates = True
+            for pid in range(self.n_prototypes):
+                if len(self.model_updates[pid]) == 0:
+                    print(f"[SERVER] 原型 {pid} 还没有收到任何更新，无法聚合")
+                    all_prototypes_have_updates = False
+                    break
+            
+            if all_prototypes_have_updates:
+                print("[SERVER] 所有原型都有更新，开始聚合")
+                await self.perform_federated_averaging()
+            else:
+                print("[SERVER] 某些原型缺少更新，无法聚合")
+        else:
+            print(f"[SERVER] 尚有客户端未完成模型上传，继续等待...")
     
     async def handle_data_collection(self, submission):
         """处理数据征收请求"""
@@ -511,6 +554,9 @@ class FederatedServerCore:
             "metadata": update.metadata
         })
         
+        # 记录客户端已完成的原型
+        self.client_finished_prototypes[client_id].add(prototype_id)
+        
         print(f"[SERVER] 收到客户端 {client_id} 原型 {prototype_id} 的模型更新，数据量: {update.data_size}")
         
         # 打印当前模型更新状态
@@ -518,21 +564,6 @@ class FederatedServerCore:
         for pid in range(self.n_prototypes):
             count = len(self.model_updates[pid])
             print(f"  原型 {pid}: {count} 个更新")
-        
-        # 检查是否所有原型的更新都已收集（每个原型至少有一个更新）
-        all_updates_collected = True
-        for pid in range(self.n_prototypes):
-            if len(self.model_updates[pid]) == 0:
-                print(f"[SERVER] 原型 {pid} 还没有收到任何更新")
-                all_updates_collected = False
-                break
-        
-        if all_updates_collected:
-            print("[SERVER] 所有原型的模型更新已收集，准备聚合")
-            # 触发聚合过程
-            await self.perform_federated_averaging()
-        else:
-            print("[SERVER] 模型更新尚未收集完整，继续等待")
         
         return {"status": "received", "update_id": f"{client_id}_{prototype_id}"}
     
@@ -546,6 +577,9 @@ class FederatedServerCore:
         
         # 将聚类中心存储到字典中
         self.client_prototypes[client_id] = np.array(prototypes)
+        
+        # 记录该客户端应该完成的原型数量
+        self.client_expected_prototypes_count[client_id] = len(prototypes)
         
         # 确保客户端在训练队列中
         if client_id not in self.training_queue:
@@ -627,6 +661,9 @@ class FederatedServerCore:
         
         # 保存聚合后的模型
         self.save_aggregated_models()
+        
+        # 重置客户端完成状态，为下一轮训练做准备
+        self.client_finished_prototypes.clear()
         
         return {
             "status": "aggregated",

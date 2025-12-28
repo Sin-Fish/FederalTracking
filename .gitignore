@@ -110,3 +110,4 @@ pack/
 data/
 models/
 model_cache/
+aggregated_models/

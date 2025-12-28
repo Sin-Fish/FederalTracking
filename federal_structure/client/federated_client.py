@@ -561,66 +561,50 @@ class FederatedClient:
         
         return X, y
     
+    def train_model(self, model: SimpleLSTM, data: List[str], proto_id: int):
+        """训练单个模型"""
+        X, y = self.prepare_training_data(proto_id)
+        if X is None or y is None:
+            return
+        
+        optimizer = self.optimizers[proto_id]
+        criterion = nn.MSELoss()
+        
+        # 小批量训练
+        for epoch in range(self.epochs_per_round):
+            total_loss = 0
+            
+            for batch_start in range(0, len(X), self.batch_size):
+                batch_end = min(batch_start + self.batch_size, len(X))
+                X_batch = X[batch_start:batch_end]
+                y_batch = y[batch_start:batch_end]
+                
+                optimizer.zero_grad()
+                outputs = model(X_batch)
+                loss = criterion(outputs, y_batch)
+                loss.backward()
+                optimizer.step()
+                
+                total_loss += loss.item()
+            
+            avg_loss = total_loss / len(X)
+            print(f"[CLIENT] 原型 {proto_id} 轮次 {epoch+1}/{self.epochs_per_round}, 平均损失: {avg_loss:.4f}")
+    
     def train_local_models(self):
         """训练所有本地模型"""
         print("[CLIENT] 开始本地训练...")
-        
         self.is_training = True
-        self.current_round += 1
         
-        # 初始化本地模型（从全局模型复制）
-        self.local_models.clear()
-        self.optimizers.clear()
-        
-        # 为每个有数据的原型创建模型
-        for proto_id in self.prototype_mapping.keys():
-            if len(self.prototype_mapping[proto_id]) > self.sequence_length * 2:  # 有足够数据
-                model = SimpleLSTM()
-                self.local_models[proto_id] = model
-                self.optimizers[proto_id] = optim.Adam(model.parameters(), lr=self.learning_rate)
-        
-        print(f"[CLIENT] 将为 {len(self.local_models)} 个原型训练模型")
-        
-        # 训练每个模型
-        for epoch in range(self.epochs_per_round):
-            total_loss = 0
-            model_count = 0
+        for proto_id, model in self.local_models.items():
+            print(f"[CLIENT] 正在训练原型 {proto_id} 的模型...")
             
-            for proto_id, model in self.local_models.items():
-                X, y = self.prepare_training_data(proto_id)
-                if X is None or y is None:
-                    continue
-                
-                optimizer = self.optimizers[proto_id]
-                criterion = nn.MSELoss()
-                
-                # 小批量训练
-                for batch_start in range(0, len(X), self.batch_size):
-                    batch_end = min(batch_start + self.batch_size, len(X))
-                    X_batch = X[batch_start:batch_end]
-                    y_batch = y[batch_start:batch_end]
-                    
-                    optimizer.zero_grad()
-                    outputs = model(X_batch)
-                    loss = criterion(outputs, y_batch)
-                    loss.backward()
-                    optimizer.step()
-                    
-                    total_loss += loss.item()
-                
-                model_count += 1
+            # 获取该原型的数据
+            proto_data_indices = self.prototype_mapping[proto_id]
+            proto_data = [self.processed_data[i] for i in proto_data_indices]
             
-            # 更新进度
-            progress = (epoch + 1) / self.epochs_per_round
-            self.send_status_update("training", progress)
-            
-            if model_count > 0:
-                avg_loss = total_loss / model_count
-                print(f"[CLIENT] 轮次 {self.current_round}, 周期 {epoch+1}/{self.epochs_per_round}, 平均损失: {avg_loss:.4f}")
-        
-        print("[CLIENT] 本地训练完成")
-        self.is_training = False
-        self.send_status_update("finished", 1.0)
+            # 训练模型
+            self.train_model(model, proto_data, proto_id)
+            print(f"[CLIENT] 原型 {proto_id} 模型训练完成")
     
     def submit_model_updates(self):
         """提交模型更新到服务器"""
@@ -659,6 +643,8 @@ class FederatedClient:
                     
             except Exception as e:
                 print(f"[CLIENT] 提交模型更新时发生错误: {e}")
+        
+        print("[CLIENT] 模型更新提交完成")
     
     # ==================== 心跳与维护 ====================
     def start_heartbeat(self, interval: int = 30):
@@ -717,6 +703,10 @@ class FederatedClient:
         
         # 9. 提交模型更新
         self.submit_model_updates()
+        
+        # 10. 发送完成状态（之前在train_local_models内部发送）
+        self.is_training = False
+        self.send_status_update("finished", 1.0)
         
         print("\n" + "="*60)
         print("客户端流程完成！")
