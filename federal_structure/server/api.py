@@ -1,6 +1,17 @@
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, FileResponse
+from datetime import datetime, timedelta
+import os
+import json
 import asyncio
+import hashlib
+import zipfile
+import tempfile
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+import numpy as np
+import requests
+from starlette.responses import FileResponse
 
 from models import ClientRegister, ClientStatus, DataSubmission, ModelUpdate
 from core import FederatedServerCore
@@ -125,9 +136,9 @@ class FederatedServerAPI:
             if not event:
                 raise HTTPException(status_code=500, detail="客户端就位检查事件未初始化")
             
-            # 等待事件被设置（最多等待25秒）
+            # 等待事件被设置（最多等待60秒，给服务器足够时间发起训练）
             try:
-                await asyncio.wait_for(event.wait(), timeout=25.0)
+                await asyncio.wait_for(event.wait(), timeout=360.0)
                 
                 # 返回就位检查信息
                 return {

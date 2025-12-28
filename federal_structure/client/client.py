@@ -152,13 +152,18 @@ class FederatedClient:
             print("[CLIENT] 未收到训练开始指令，退出流程")
             return
         
-        # 7. 如果服务器返回了原型信息，使用这些原型
+        # 8. 如果服务器返回了原型信息，使用这些原型并创建映射
         if "training_info" in training_info and training_info["training_info"]:
             training_info_data = training_info["training_info"]
             if training_info_data.get("prototypes"):
                 self.communication.global_prototypes = np.array(training_info_data["prototypes"])
             if training_info_data.get("prototype_labels"):
                 self.communication.prototype_labels = training_info_data["prototype_labels"]
+            
+            # 重新创建原型映射，因为现在我们有了原型
+            if self.communication.global_prototypes is not None:
+                print("[CLIENT] 使用服务器提供的原型创建映射...")
+                self.communication.map_to_prototypes(self.communication.global_prototypes)
         else:
             # 如果服务器没有在训练指令中返回原型，单独获取
             print("[CLIENT] 从服务器获取全局原型...")
@@ -166,14 +171,14 @@ class FederatedClient:
                 print("[CLIENT] 获取原型失败，退出流程")
                 return
         
-        # 8. 开始本地训练
+        # 9. 开始本地训练
         print("[CLIENT] 开始本地训练...")
         local_models = self.training.train_local_models(
             self.data_processor.behavior_embeddings, 
             self.communication.prototype_mapping
         )
         
-        # 9. 提交模型更新
+        # 10. 提交模型更新
         self.submit_model_updates()
         
         print("\n" + "="*60)

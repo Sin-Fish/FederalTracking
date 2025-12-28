@@ -55,63 +55,90 @@ class TrainingModule:
         
         return X, y
     
-    def train_local_models(self, behavior_embeddings: np.ndarray, prototype_mapping: Dict[int, List[int]]):
-        """训练所有本地模型"""
-        print("[CLIENT] 开始本地训练...")
+    def train_local_models(self, behavior_embeddings: np.ndarray, prototype_mapping: np.ndarray):
+        """为每个原型训练本地模型"""
+        print(f"[CLIENT] 开始本地训练...")
         
-        self.is_training = True
-        self.current_round += 1
+        # 获取嵌入维度
+        embedding_dim = behavior_embeddings.shape[1] if len(behavior_embeddings.shape) > 1 else behavior_embeddings.shape[0]
+        print(f"[CLIENT] 嵌入维度: {embedding_dim}")
         
-        # 初始化本地模型
-        self.local_models.clear()
-        self.optimizers.clear()
+        # 获取原型数量
+        num_prototypes = len(np.unique(prototype_mapping))
+        print(f"[CLIENT] 将为 {num_prototypes} 个原型训练模型")
         
-        # 为每个有数据的原型创建模型
-        for proto_id in prototype_mapping.keys():
-            if len(prototype_mapping[proto_id]) > self.sequence_length * 2:  # 有足够数据
-                model = SimpleLSTM()
-                self.local_models[proto_id] = model
-                self.optimizers[proto_id] = optim.Adam(model.parameters(), lr=self.learning_rate)
+        if num_prototypes == 0:
+            print("[CLIENT] 没有原型需要训练")
+            return {}
         
-        print(f"[CLIENT] 将为 {len(self.local_models)} 个原型训练模型")
+        local_models = {}
         
-        # 训练每个模型
-        for epoch in range(self.epochs_per_round):
-            total_loss = 0
-            model_count = 0
+        for prototype_id in range(num_prototypes):
+            print(f"[CLIENT] 正在训练原型 {prototype_id} 的模型...")
             
-            for proto_id, model in self.local_models.items():
-                X, y = self.prepare_training_data(proto_id, behavior_embeddings, prototype_mapping)
-                if X is None or y is None:
-                    continue
-                
-                optimizer = self.optimizers[proto_id]
-                criterion = nn.MSELoss()
-                
-                # 小批量训练
-                for batch_start in range(0, len(X), self.batch_size):
-                    batch_end = min(batch_start + self.batch_size, len(X))
-                    X_batch = X[batch_start:batch_end]
-                    y_batch = y[batch_start:batch_end]
+            # 获取属于当前原型的行为索引
+            prototype_indices = np.where(prototype_mapping == prototype_id)[0]
+            
+            if len(prototype_indices) == 0:
+                print(f"[CLIENT] 原型 {prototype_id} 没有分配的行为数据，跳过训练")
+                continue
+            
+            # 获取当前原型的行为数据
+            prototype_behaviors = behavior_embeddings[prototype_indices]
+            
+            if len(prototype_behaviors) == 0:
+                print(f"[CLIENT] 原型 {prototype_id} 行为数据为空，跳过训练")
+                continue
+            
+            # 使用LSTM模型
+            model = SimpleLSTM(input_size=embedding_dim, hidden_size=100, output_size=embedding_dim)
+            optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+            criterion = torch.nn.MSELoss()
+            
+            # 准备训练数据
+            # 将行为序列转换为输入-目标对 (x, y) 其中 y 是 x 的下一项
+            if len(prototype_behaviors) < 2:
+                print(f"[CLIENT] 原型 {prototype_id} 行为数据太少，无法训练")
+                continue
+            
+            # 转换为tensor
+            data_tensor = torch.FloatTensor(prototype_behaviors)
+            
+            # 创建序列数据
+            seq_length = min(10, len(data_tensor) - 1)  # 确保序列长度不会超过数据长度
+            sequences = []
+            for i in range(len(data_tensor) - seq_length):
+                seq = data_tensor[i:i+seq_length]
+                target = data_tensor[i+seq_length]
+                sequences.append((seq, target))
+            
+            if not sequences:
+                print(f"[CLIENT] 原型 {prototype_id} 无法创建训练序列")
+                continue
+            
+            # 训练模型
+            model.train()
+            for epoch in range(self.epochs_per_round):
+                total_loss = 0
+                for x_batch, y_batch in sequences:
+                    # 增加批次维度
+                    x_batch = x_batch.unsqueeze(0)  # (1, seq_len, embedding_dim)
+                    y_batch = y_batch.unsqueeze(0)  # (1, embedding_dim)
                     
                     optimizer.zero_grad()
-                    outputs = model(X_batch)
+                    outputs = model(x_batch)
                     loss = criterion(outputs, y_batch)
                     loss.backward()
                     optimizer.step()
                     
                     total_loss += loss.item()
                 
-                model_count += 1
+                if epoch % 5 == 0:  # 每5轮打印一次
+                    print(f"[CLIENT] 原型 {prototype_id} - 轮次 {epoch}, 平均损失: {total_loss/len(sequences):.6f}")
             
-            # 更新进度
-            progress = (epoch + 1) / self.epochs_per_round
-            
-            if model_count > 0:
-                avg_loss = total_loss / model_count
-                print(f"[CLIENT] 轮次 {self.current_round}, 周期 {epoch+1}/{self.epochs_per_round}, 平均损失: {avg_loss:.4f}")
+            # 保存模型
+            local_models[prototype_id] = model
+            print(f"[CLIENT] 原型 {prototype_id} 模型训练完成")
         
         print("[CLIENT] 本地训练完成")
-        self.is_training = False
-        
-        return self.local_models
+        return local_models

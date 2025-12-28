@@ -55,128 +55,103 @@ class CommunicationModule:
             return False
     
     def _download_model_from_server(self, model_name: str) -> bool:
-        """
-        从服务器下载模型文件，支持断点续传和哈希验证
-        
-        返回: True表示成功，False表示失败
-        """
-        import hashlib
-        
-        # 本地缓存路径
-        cache_dir = self.model_cache_path
-        os.makedirs(cache_dir, exist_ok=True)
-        
-        # 临时文件路径
-        temp_zip_path = f"{cache_dir}/{model_name}.temp.zip"
-        final_zip_path = f"{cache_dir}/{model_name}.zip"
-        extract_dir = f"{cache_dir}/{model_name}"
+        """从服务器下载模型"""
+        import time
+        last_print_time = 0  # 记录上次打印时间
         
         try:
             print(f"[CLIENT] 开始下载模型 {model_name}...")
             
-            # 使用流式下载，支持大文件
-            headers = {}
+            # 获取模型下载链接
+            download_url = f"{self.server_url}/api/model/download"
             
-            # 检查是否存在部分下载的文件（支持断点续传）
-            if os.path.exists(temp_zip_path):
-                downloaded_size = os.path.getsize(temp_zip_path)
-                headers['Range'] = f'bytes={downloaded_size}-'
-                print(f"[CLIENT] 发现未完成的下载，尝试续传 ({downloaded_size} bytes)")
+            # 发送下载请求（流式下载）
+            response = requests.get(download_url, stream=True, timeout=300)
             
-            response = requests.get(
-                f"{self.server_url}/api/model/download",
-                headers=headers,
-                stream=True,
-                timeout=30
-            )
-            
-            if response.status_code not in [200, 206]:  # 200 OK, 206 Partial Content
+            if response.status_code != 200:
                 print(f"[CLIENT] 下载请求失败: {response.status_code}")
                 return False
             
-            # 获取服务器提供的哈希值
-            server_hash = response.headers.get('X-Model-Hash')
-            if not server_hash:
-                print("[CLIENT] 警告：服务器未提供模型哈希值")
+            # 获取文件总大小
+            total_size = int(response.headers.get('content-length', 0))
+            print(f"[CLIENT] 模型文件大小: {total_size / (1024*1024):.2f} MB")
             
-            # 以追加模式打开文件（支持断点续传）
-            mode = 'ab' if 'Range' in headers else 'wb'
-            with open(temp_zip_path, mode) as f:
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = os.path.getsize(temp_zip_path) if 'Range' in headers else 0
-                
-                # 进度显示
-                chunk_size = 8192
-                for chunk in response.iter_content(chunk_size=chunk_size):
+            # 创建临时文件保存下载内容
+            temp_dir = "./temp_downloads"
+            os.makedirs(temp_dir, exist_ok=True)
+            
+            temp_filename = os.path.join(temp_dir, f"{model_name}_download_{int(time.time())}.zip")
+            
+            # 保存下载内容到临时文件
+            downloaded_size = 0
+            start_time = time.time()
+            
+            with open(temp_filename, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
-                        downloaded += len(chunk)
+                        downloaded_size += len(chunk)
                         
-                        # 显示下载进度
-                        if total_size > 0:
-                            percent = (downloaded / total_size) * 100
-                            if int(percent) % 10 == 0:  # 每10%显示一次
-                                print(f"[CLIENT] 下载进度: {percent:.1f}% ({downloaded}/{total_size} bytes)")
+                        # 控制打印频率，每2秒打印一次
+                        current_time = time.time()
+                        if current_time - last_print_time >= 2.0:
+                            progress = (downloaded_size / total_size) * 100 if total_size > 0 else 0
+                            print(f"[CLIENT] 下载进度: {progress:.1f}% ({downloaded_size}/{total_size} bytes)")
+                            last_print_time = current_time
             
-            print("[CLIENT] 文件下载完成")
+            print(f"[CLIENT] 文件下载完成")
             
-            # 重命名为最终文件
-            if os.path.exists(final_zip_path):
-                os.remove(final_zip_path)
-            os.rename(temp_zip_path, final_zip_path)
-            
-            # 验证文件哈希
-            print("[CLIENT] 验证文件完整性...")
-            with open(final_zip_path, 'rb') as f:
-                local_hash = hashlib.sha256(f.read()).hexdigest()
-            
-            if server_hash and local_hash != server_hash:
-                print(f"[CLIENT] 文件哈希验证失败!")
-                print(f"  本地: {local_hash[:16]}...")
-                print(f"  服务器: {server_hash[:16]}...")
-                
-                # 删除损坏的文件
-                os.remove(final_zip_path)
-                return False
-            
-            print(f"[CLIENT] 文件哈希验证通过: {local_hash[:16]}...")
+            # 验证文件完整性
+            downloaded_hash = self._calculate_file_hash(temp_filename)
+            server_hash_response = requests.get(f"{self.server_url}/api/model/hash")
+            if server_hash_response.status_code == 200:
+                server_hash = server_hash_response.json().get("hash", "")
+                if downloaded_hash != server_hash:
+                    print(f"[CLIENT] 文件哈希验证失败")
+                    return False
+                else:
+                    print(f"[CLIENT] 文件哈希验证通过: {server_hash[:16]}...")
+            else:
+                print(f"[CLIENT] 无法获取服务器文件哈希，跳过验证")
             
             # 解压文件
-            print("[CLIENT] 解压模型文件...")
-            if os.path.exists(extract_dir):
-                shutil.rmtree(extract_dir)
+            print(f"[CLIENT] 解压模型文件...")
+            model_cache_dir = "./model_cache"
+            os.makedirs(model_cache_dir, exist_ok=True)
             
-            with zipfile.ZipFile(final_zip_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_dir)
-            
-            # 清理压缩包（可选）
-            os.remove(final_zip_path)
+            extract_path = os.path.join(model_cache_dir, model_name)
+            with zipfile.ZipFile(temp_filename, 'r') as zip_ref:
+                zip_ref.extractall(extract_path)
             
             # 验证解压后的模型
-            print("[CLIENT] 验证解压后的模型...")
-            verify_hash = self._compute_directory_hash(extract_dir)
-            print(f"[CLIENT] 模型目录哈希: {verify_hash[:16]}...")
+            print(f"[CLIENT] 验证解压后的模型...")
+            extracted_hash = self._calculate_directory_hash(extract_path)
+            print(f"[CLIENT] 模型目录哈希: {extracted_hash[:16]}...")
+            
+            # 清理临时文件
+            os.remove(temp_filename)
             
             return True
             
-        except requests.exceptions.Timeout:
-            print("[CLIENT] 下载超时，文件可能不完整")
-            return False
-        except requests.exceptions.ConnectionError:
-            print("[CLIENT] 连接错误")
-            return False
         except Exception as e:
-            print(f"[CLIENT] 下载过程中发生错误: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            # 清理可能损坏的文件
-            for path in [temp_zip_path, final_zip_path]:
-                if os.path.exists(path):
-                    os.remove(path)
+            print(f"[CLIENT] 下载模型时发生错误: {e}")
             return False
-
-    def _compute_directory_hash(self, dir_path: str) -> str:
+    
+    def _calculate_file_hash(self, file_path: str) -> str:
+        """计算文件的哈希值"""
+        import hashlib
+        sha256_hash = hashlib.sha256()
+        
+        try:
+            with open(file_path, 'rb') as f:
+                while chunk := f.read(8192):
+                    sha256_hash.update(chunk)
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            print(f"[CLIENT] 计算文件哈希失败: {e}")
+            return ""
+    
+    def _calculate_directory_hash(self, dir_path: str) -> str:
         """计算目录的哈希值"""
         import hashlib
         sha256_hash = hashlib.sha256()
@@ -468,7 +443,7 @@ class CommunicationModule:
             response = requests.get(
                 f"{self.server_url}/api/client/wait-readiness-check",
                 params={"client_id": self.client_id},
-                timeout=35  # 35秒超时
+                timeout=30  # 35秒超时
             )
             
             if response.status_code == 200:
