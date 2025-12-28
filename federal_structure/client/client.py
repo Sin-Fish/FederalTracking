@@ -130,11 +130,13 @@ class FederatedClient:
         # 4. 启动心跳
         self.start_heartbeat()
         
-        # 5. 提交高频数据
-        if not self.submit_high_freq_data():
-            print("[CLIENT] 高频数据提交失败，继续流程...")
-        else:
-            print("[CLIENT] 高频数据提交成功")
+        # 5. 使用嵌入模型生成聚类中心并发送给服务器
+        print("[CLIENT] 生成本地聚类中心并发送到服务器...")
+        if not self.communication.send_local_prototypes():
+            print("[CLIENT] 发送本地聚类中心失败，退出流程")
+            return
+        
+        print("[CLIENT] 本地聚类中心发送完成")
         
         # 6. 等待服务器发起就位检查
         print("[CLIENT] 等待服务器发起就位检查...")
@@ -160,9 +162,9 @@ class FederatedClient:
             if training_info_data.get("prototype_labels"):
                 self.communication.prototype_labels = training_info_data["prototype_labels"]
             
-            # 重新创建原型映射，因为现在我们有了原型
+            # 重新创建原型映射，因为现在我们有了最终的原型
             if self.communication.global_prototypes is not None:
-                print("[CLIENT] 使用服务器提供的原型创建映射...")
+                print("[CLIENT] 使用服务器提供的最终原型创建映射...")
                 self.communication.map_to_prototypes(self.communication.global_prototypes)
         else:
             # 如果服务器没有在训练指令中返回原型，单独获取

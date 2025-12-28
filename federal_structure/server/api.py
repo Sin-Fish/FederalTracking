@@ -22,6 +22,12 @@ class FederatedServerAPI:
         self.app = FastAPI(title="联邦学习服务器", version="1.0")
         self.core = FederatedServerCore(n_prototypes=n_prototypes)
         
+        # 添加启动和关闭事件处理器
+        @self.app.on_event("startup")
+        async def startup_event():
+            # 启动状态监控任务
+            asyncio.create_task(self.core.status_monitor())
+        
         # 初始化API路由
         self.setup_routes()
     
@@ -85,6 +91,7 @@ class FederatedServerAPI:
                     "training_info": {
                         "prototypes": self.core.global_prototypes.tolist() if self.core.global_prototypes is not None else None,
                         "prototype_labels": self.core.prototype_labels,
+                        "model_hash": self.core.embedding_model_hash
                     }
                 }
             except asyncio.TimeoutError:
@@ -110,12 +117,12 @@ class FederatedServerAPI:
             if not event:
                 raise HTTPException(status_code=500, detail="客户端就位检查事件未初始化")
             
-            # 设置事件，表示客户端已就位
+            # 设置事件，表示服务器发起就位检查
             event.set()
             
             return {
-                "status": "ready",
-                "message": f"客户端 {client_id} 已就位",
+                "status": "ready_check_initiated",
+                "message": f"已向客户端 {client_id} 发送就位检查信号",
                 "model_hash": self.core.embedding_model_hash,
                 "model_available": self.core.embedding_model is not None
             }
@@ -178,6 +185,13 @@ class FederatedServerAPI:
         async def submit_update(update: ModelUpdate):
             """接收模型更新"""
             return await self.core.handle_model_update(update)
+        
+        @self.app.post("/api/client/prototypes")
+        async def receive_client_prototypes(client_id: str = Query(..., description="客户端ID"), prototypes: List[List[float]] = None):
+            """接收客户端发回的聚类中心"""
+            if prototypes is None:
+                raise HTTPException(status_code=400, detail="聚类中心数据不能为空")
+            return await self.core.receive_client_prototypes(client_id, prototypes)
         
         @self.app.get("/api/system/prototypes")
         async def get_prototypes():

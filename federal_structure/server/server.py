@@ -7,14 +7,6 @@ def start_server(host="0.0.0.0", port=8000, n_prototypes=5):
     """启动联邦学习服务器"""
     server = FederatedServerAPI(n_prototypes=n_prototypes)
     
-    # 启动后台监控任务
-    async def run_monitor():
-        await server.core.status_monitor()
-    
-    # 创建后台任务
-    loop = asyncio.get_event_loop()
-    monitor_task = loop.create_task(run_monitor())
-    
     print(f"""
     ╔══════════════════════════════════════╗
     ║    联邦学习服务器启动成功!           ║

@@ -43,8 +43,15 @@ class FederatedServerCore:
         self.training_start_events: Dict[str, asyncio.Event] = {}  # 用于跟踪客户端训练开始事件
         self.readiness_check_events: Dict[str, asyncio.Event] = {}  # 用于跟踪客户端就位检查事件
         
+        # 存储客户端聚类中心
+        self.client_prototypes: Dict[str, np.ndarray] = {}  # 存储客户端发回的聚类中心
+        self.pending_clients_for_aggregation: set = set()  # 等待聚合的客户端
+        
         # 初始化时尝试加载本地模型
         self._initialize_embedding_model()
+        
+        # 状态监控任务 - 将在 start() 中启动
+        self.monitor_task: Optional[asyncio.Task] = None
     
     def _initialize_embedding_model(self):
         """初始化嵌入模型，优先从本地加载"""
@@ -78,7 +85,23 @@ class FederatedServerCore:
         else:
             print(f"[SERVER] 本地模型不存在: {model_dir}，开始下载")
             self._download_model_sync(model_name)
-    
+
+    def _compute_model_hash(self, model_path: str) -> str:
+        """计算模型目录的哈希值"""
+        import hashlib
+        import os
+        
+        hash_obj = hashlib.sha256()
+        
+        for root, dirs, files in os.walk(model_path):
+            for file in sorted(files):
+                file_path = os.path.join(root, file)
+                with open(file_path, 'rb') as f:
+                    while chunk := f.read(8192):
+                        hash_obj.update(chunk)
+        
+        return hash_obj.hexdigest()
+
     def _download_model_sync(self, model_name: str):
         """同步下载模型"""
         try:
@@ -123,6 +146,25 @@ class FederatedServerCore:
                 "status": "idle",
                 "last_seen": datetime.now().isoformat()
             })
+            
+            # 验证嵌入模型一致性
+            if hasattr(req, 'embedding_hash') and req.embedding_hash != self.embedding_model_hash:
+                print(f"[SERVER] 客户端 {client_id} 嵌入模型哈希不匹配")
+                return JSONResponse(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    content={
+                        "status": "error",
+                        "message": "嵌入模型版本不匹配，请更新模型",
+                        "server_model_hash": self.embedding_model_hash,
+                        "client_model_hash": req.embedding_hash
+                    }
+                )
+            
+            # 接收并存储客户端聚类中心（如果提供）
+            if hasattr(req, 'prototypes') and req.prototypes is not None:
+                self.client_prototypes[client_id] = np.array(req.prototypes)
+                print(f"[SERVER] 已接收客户端 {client_id} 的聚类中心: {len(req.prototypes)} 个")
+            
             return {"status": "updated", "client_id": client_id}
         
         # 新客户端注册
@@ -145,6 +187,19 @@ class FederatedServerCore:
         self.training_start_events[client_id] = asyncio.Event()
         self.readiness_check_events[client_id] = asyncio.Event()
         
+        # 验证嵌入模型一致性
+        if hasattr(req, 'embedding_hash') and req.embedding_hash != self.embedding_model_hash:
+            print(f"[SERVER] 客户端 {client_id} 嵌入模型哈希不匹配")
+            return JSONResponse(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                content={
+                    "status": "error",
+                    "message": "嵌入模型版本不匹配，请更新模型",
+                    "server_model_hash": self.embedding_model_hash,
+                    "client_model_hash": req.embedding_hash
+                }
+            )
+        
         # 验证数据格式（这里可以添加更复杂的验证逻辑）
         if req.sample_count < 100:
             return JSONResponse(
@@ -152,9 +207,16 @@ class FederatedServerCore:
                 content={
                     "status": "warning",
                     "message": "数据量较少，可能影响训练效果",
-                    "client_id": client_id
+                    "client_id": client_id,
+                    "model_hash": self.embedding_model_hash,
+                    "n_prototypes": self.n_prototypes
                 }
             )
+        
+        # 接收并存储客户端聚类中心（如果提供）
+        if hasattr(req, 'prototypes') and req.prototypes is not None:
+            self.client_prototypes[client_id] = np.array(req.prototypes)
+            print(f"[SERVER] 已接收客户端 {client_id} 的聚类中心: {len(req.prototypes)} 个")
         
         # 自动加入训练队列（根据你的策略可调整）
         if not client_info["in_queue"]:
@@ -162,7 +224,13 @@ class FederatedServerCore:
             client_info["in_queue"] = True
         
         print(f"[SERVER] 客户端 {client_id} 报到成功，样本数: {req.sample_count}")
-        return {"status": "registered", "client_id": client_id, "queue_position": len(self.training_queue)}
+        return {
+            "status": "registered", 
+            "client_id": client_id, 
+            "queue_position": len(self.training_queue),
+            "model_hash": self.embedding_model_hash,
+            "n_prototypes": self.n_prototypes
+        }
     
     async def handle_status_update(self, status_update):
         """处理客户端状态更新"""
@@ -202,20 +270,10 @@ class FederatedServerCore:
         
         print(f"[SERVER] 收到客户端 {client_id} 的高频数据，数量: {len(submission.high_freq_actions)}")
         
-        # 检查是否所有队列中的客户端都已提交数据
-        all_submitted = all(
-            self.client_registry.get(cid, {}).get("data_submitted", False)
-            for cid in self.training_queue
-        )
-        
-        if all_submitted and len(self.training_queue) > 0:
-            # 自动触发原型生成
-            asyncio.create_task(self.generate_global_prototypes())
-        
         return {"status": "collected", "action_count": len(submission.high_freq_actions)}
     
     async def generate_global_prototypes(self):
-        """生成全局行为原型"""
+        """生成全局行为原型 - 旧方法，现在只在没有客户端聚类中心时使用"""
         print("[SERVER] 开始生成全局行为原型...")
         
         # 收集所有高频行为数据
@@ -282,14 +340,6 @@ class FederatedServerCore:
     
     async def initiate_training(self):
         """启动联邦训练"""
-        if self.global_prototypes is None:
-            raise HTTPException(status_code=400, detail="请先生成全局原型")
-        
-        if len(self.training_queue) == 0:
-            raise HTTPException(status_code=400, detail="训练队列为空")
-        
-        print(f"[SERVER] 启动联邦训练，参与客户端: {len(self.training_queue)}")
-        
         # 首先检查所有客户端的就位状态
         ready_clients = await self.check_client_readiness()
         
@@ -299,12 +349,23 @@ class FederatedServerCore:
                 "message": "没有就位的客户端，无法开始训练"
             }
         
+        # 使用客户端发回的聚类中心进行第二次聚类
+        await self.aggregate_client_prototypes()
+        
+        if self.global_prototypes is None:
+            raise HTTPException(status_code=400, detail="请先生成全局原型")
+        
+        if len(self.training_queue) == 0:
+            raise HTTPException(status_code=400, detail="训练队列为空")
+        
+        print(f"[SERVER] 启动联邦训练，参与客户端: {len(self.training_queue)}")
+        
         # 重置模型更新池
         self.model_updates.clear()
         
         # 准备训练指令
         training_info = {
-            "prototypes": self.global_prototypes.tolist(),
+            "prototypes": self.global_prototypes.tolist() if self.global_prototypes is not None else None,
             "prototype_labels": self.prototype_labels,
             "model_arch": "SimpleLSTM",
             "model_config": {
@@ -312,7 +373,8 @@ class FederatedServerCore:
                 "hidden_size": 128,
                 "output_size": 100
             },
-            "clients": ready_clients
+            "clients": ready_clients,
+            "model_hash": self.embedding_model_hash
         }
         
         # 更新客户端状态
@@ -331,56 +393,83 @@ class FederatedServerCore:
             "training_info": training_info
         }
     
+    async def aggregate_client_prototypes(self):
+        """聚合客户端发回的聚类中心，重新进行聚类"""
+        print("[SERVER] 开始聚合客户端聚类中心...")
+        
+        # 收集所有在训练队列中的客户端的聚类中心
+        all_client_prototypes = []
+        for client_id, prototypes in self.client_prototypes.items():
+            if client_id in self.training_queue:
+                all_client_prototypes.extend(prototypes)
+        
+        if len(all_client_prototypes) == 0:
+            print("[SERVER] 没有收集到任何客户端聚类中心")
+            return
+        
+        print(f"[SERVER] 收集到 {len(all_client_prototypes)} 个客户端聚类中心")
+        
+        # 使用K-Means重新聚类，得到新的全局原型
+        from sklearn.cluster import KMeans
+        kmeans = KMeans(n_clusters=self.n_prototypes, random_state=42, n_init=10)
+        kmeans.fit(all_client_prototypes)
+        
+        # 更新全局原型为中心点
+        self.global_prototypes = kmeans.cluster_centers_
+        print(f"[SERVER] 重新聚类完成，更新了 {self.n_prototypes} 个全局原型")
+        
+        # 为每个原型生成描述性标签
+        self.prototype_labels = [f"原型{i}: 聚类中心" for i in range(self.n_prototypes)]
+    
     async def check_client_readiness(self) -> List[str]:
-        """检查所有队列中客户端的就位状态"""
+        """检查客户端就位状态"""
         print(f"[SERVER] 检查 {len(self.training_queue)} 个客户端的就位状态...")
         
         ready_clients = []
         unresponsive_clients = []
         
-        # 清除之前的所有就位确认状态
-        for client_id in self.client_registry:
-            if "readiness_confirmed" in self.client_registry[client_id]:
-                del self.client_registry[client_id]["readiness_confirmed"]
-            if "readiness_confirmed_at" in self.client_registry[client_id]:
-                del self.client_registry[client_id]["readiness_confirmed_at"]
-        
-        # 为每个客户端重置就位检查事件
-        for client_id in list(self.training_queue):
-            if client_id in self.readiness_check_events:
-                self.readiness_check_events[client_id].clear()
-        
-        # 向所有客户端发送就位检查请求（通过设置事件，触发客户端的长轮询响应）
-        for client_id in list(self.training_queue):
+        for client_id in list(self.training_queue):  # 将deque转换为列表，避免在迭代时修改原队列
             print(f"[SERVER] 检查客户端 {client_id} 就位状态...")
             
-            # 设置事件，通知客户端进行就位检查
+            # 重置客户端的就位检查事件
             if client_id in self.readiness_check_events:
-                self.readiness_check_events[client_id].set()
-                print(f"[SERVER] 已向客户端 {client_id} 发送就位检查信号")
-        
-        # 等待客户端响应（最多等待30秒）
-        print("[SERVER] 等待客户端响应就位检查...")
-        await asyncio.sleep(30.0)
-        
-        # 检查哪些客户端已经确认就位
-        for client_id in list(self.training_queue):
-            client_info = self.client_registry.get(client_id, {})
+                self.readiness_check_events[client_id].clear()
             
-            # 检查客户端是否确认了就位
-            if client_info.get("readiness_confirmed", False):
-                ready_clients.append(client_id)
-                print(f"[SERVER] 客户端 {client_id} 已确认就位")
-            else:
-                print(f"[SERVER] 客户端 {client_id} 未响应就位检查，从队列中移除")
-                unresponsive_clients.append(client_id)
+            # 发送就位检查信号到客户端
+            try:
+                # 发送就位检查信号
+                print(f"[SERVER] 已向客户端 {client_id} 发送就位检查信号")
+                
+                # 等待客户端响应（最多等待60秒）
+                event = self.readiness_check_events[client_id]
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=60.0)
+                    
+                    # 更新客户端状态
+                    if client_id in self.client_registry:
+                        self.client_registry[client_id]["status"] = "ready"
+                        self.client_registry[client_id]["readiness_confirmed_at"] = datetime.now().isoformat()
+                    
+                    ready_clients.append(client_id)
+                    print(f"[SERVER] 客户端 {client_id} 状态更新: ready")
+                    
+                except asyncio.TimeoutError:
+                    print(f"[SERVER] 客户端 {client_id} 就位检查超时，从队列中移除")
+                    if client_id in self.training_queue:
+                        self.training_queue.remove(client_id)
+                    if client_id in self.client_registry:
+                        self.client_registry[client_id]["in_queue"] = False
+                        self.client_registry[client_id]["status"] = "timeout"
+            
+            except Exception as e:
+                print(f"[SERVER] 检查客户端 {client_id} 就位状态时发生错误: {e}")
                 if client_id in self.training_queue:
                     self.training_queue.remove(client_id)
                 if client_id in self.client_registry:
                     self.client_registry[client_id]["in_queue"] = False
-                    self.client_registry[client_id]["status"] = "offline"
+                    self.client_registry[client_id]["status"] = "error"
         
-        print(f"[SERVER] 就位检查完成: {len(ready_clients)} 个客户端就位, {len(unresponsive_clients)} 个客户端无响应")
+        print(f"[SERVER] 就位检查完成: {len(ready_clients)} 个客户端就位, {len(self.training_queue) - len(ready_clients)} 个客户端无响应")
         return ready_clients
     
     async def notify_clients_training_start(self, training_info: Dict):
@@ -400,258 +489,199 @@ class FederatedServerCore:
     async def handle_model_update(self, update: ModelUpdate):
         """处理模型更新"""
         client_id = update.client_id
-        proto_id = update.prototype_id
+        prototype_id = update.prototype_id
         
         if client_id not in self.client_registry:
             raise HTTPException(status_code=404, detail="客户端未注册")
         
-        if proto_id not in self.global_models:
-            raise HTTPException(status_code=400, detail="无效的原型ID")
+        # 验证原型ID是否在有效范围内
+        if prototype_id >= self.n_prototypes:
+            raise HTTPException(status_code=400, detail="原型ID超出范围")
         
-        # 存储更新
-        update_record = {
+        # 保存模型更新
+        self.model_updates[prototype_id].append({
             "client_id": client_id,
-            "model_state": update.model_state_dict,
+            "model_state_dict": update.model_state_dict,
             "data_size": update.data_size,
-            "timestamp": datetime.now().isoformat(),
             "metadata": update.metadata
-        }
+        })
         
-        self.model_updates[proto_id].append(update_record)
+        print(f"[SERVER] 收到客户端 {client_id} 原型 {prototype_id} 的模型更新，数据量: {update.data_size}")
         
-        # 更新客户端进度
-        client = self.client_registry[client_id]
-        if "updates_submitted" not in client:
-            client["updates_submitted"] = 0
-        client["updates_submitted"] += 1
+        # 检查是否所有客户端的更新都已收集
+        all_updates_collected = True
+        for pid in range(self.n_prototypes):
+            if len(self.model_updates[pid]) == 0:
+                all_updates_collected = False
+                break
         
-        print(f"[SERVER] 收到客户端 {client_id} 对原型{proto_id}的更新，数据量: {update.data_size}")
+        if all_updates_collected:
+            print("[SERVER] 所有模型更新已收集，准备聚合")
+            # 可以在这里触发聚合过程
         
-        # 检查是否所有客户端都已完成更新
-        all_clients_done = await self.check_training_completion()
-        
-        if all_clients_done:
-            print("[SERVER] 所有客户端更新完成，准备聚合...")
-            asyncio.create_task(self.perform_federated_averaging())
-        
-        return {"status": "update_received", "prototype_id": proto_id}
+        return {"status": "received", "update_id": f"{client_id}_{prototype_id}"}
     
-    async def check_training_completion(self):
-        """检查训练是否完成"""
-        # 简化检查：至少每个原型都有一些更新
-        total_updates = sum(len(updates) for updates in self.model_updates.values())
-        expected_min = len(self.training_queue) * self.n_prototypes // 2  # 至少一半
+    async def receive_client_prototypes(self, client_id: str, prototypes: List[List[float]]):
+        """接收客户端发回的聚类中心"""
+        print(f"[SERVER] 收到客户端 {client_id} 的聚类中心，数量: {len(prototypes)}")
         
-        return total_updates >= expected_min
+        # 验证客户端是否已注册
+        if client_id not in self.client_registry:
+            return {"status": "error", "message": "客户端未注册"}
+        
+        # 将聚类中心存储到字典中
+        self.client_prototypes[client_id] = np.array(prototypes)
+        
+        # 确保客户端在训练队列中
+        if client_id not in self.training_queue:
+            self.training_queue.append(client_id)
+            self.client_registry[client_id]["in_queue"] = True
+        
+        return {
+            "status": "received",
+            "message": f"成功接收客户端 {client_id} 的 {len(prototypes)} 个聚类中心",
+            "client_id": client_id
+        }
     
     async def perform_federated_averaging(self):
         """执行联邦平均"""
-        print("[SERVER] 开始执行联邦平均...")
+        print("[SERVER] 执行联邦平均...")
         
-        aggregated_models = {}
+        if not self.model_updates:
+            print("[SERVER] 没有模型更新可用于聚合")
+            return {"status": "no_updates"}
         
-        for proto_id, updates in self.model_updates.items():
-            if len(updates) == 0:
+        # 对每个原型聚合模型更新
+        for prototype_id in range(self.n_prototypes):
+            updates = self.model_updates[prototype_id]
+            if not updates:
                 continue
             
-            # 计算总数据量
-            total_data_size = sum(update["data_size"] for update in updates)
+            # 获取第一个更新的模型状态作为基准
+            base_state = updates[0]["model_state_dict"]
             
-            # 初始化平均权重
-            avg_state_dict = {}
-            model_keys = None
-            
-            # 加权平均
-            for update in updates:
-                state_dict = update["model_state"]
-                weight = update["data_size"] / total_data_size
+            # 创建平均状态字典
+            avg_state = {}
+            for key in base_state:
+                # 计算加权平均
+                weighted_sum = None
+                total_weight = 0
                 
-                if model_keys is None:
-                    model_keys = state_dict.keys()
-                    # 初始化平均字典
-                    for key in model_keys:
-                        avg_state_dict[key] = np.array(state_dict[key]) * weight
-                else:
-                    for key in model_keys:
-                        avg_state_dict[key] += np.array(state_dict[key]) * weight
-            
-            # 转换为列表格式
-            final_state_dict = {k: v.tolist() for k, v in avg_state_dict.items()}
+                for update in updates:
+                    weight = update["data_size"]  # 使用数据量作为权重
+                    value = np.array(update["model_state_dict"][key])
+                    
+                    if weighted_sum is None:
+                        weighted_sum = value * weight
+                    else:
+                        weighted_sum += value * weight
+                    
+                    total_weight += weight
+                
+                avg_state[key] = weighted_sum / total_weight
             
             # 更新全局模型
-            if proto_id in self.global_models:
-                self.global_models[proto_id].load_state_dict(final_state_dict)
-                aggregated_models[proto_id] = final_state_dict
-            
-            print(f"[SERVER] 原型{proto_id}聚合完成，使用{len(updates)}个客户端更新")
+            self.global_models[prototype_id].load_state_dict(avg_state)
         
-        # 保存聚合结果
-        self.save_aggregated_models(aggregated_models)
+        # 清空模型更新
+        self.model_updates.clear()
+        print(f"[SERVER] 联邦平均完成，聚合了 {self.n_prototypes} 个原型的模型")
         
         return {
-            "status": "aggregation_complete",
-            "aggregated_models_count": len(aggregated_models),
-            "timestamp": datetime.now().isoformat()
+            "status": "aggregated",
+            "aggregated_prototypes": self.n_prototypes,
+            "model_updates_count": len(updates)
         }
     
-    def save_aggregated_models(self, aggregated_models):
-        """保存聚合后的模型"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"aggregated_models_{timestamp}.pkl"
-        
-        save_data = {
-            "models": aggregated_models,
-            "prototypes": self.global_prototypes.tolist() if self.global_prototypes is not None else None,
-            "prototype_labels": self.prototype_labels,
-            "timestamp": timestamp
-        }
-        
-        with open(filename, 'wb') as f:
-            pickle.dump(save_data, f)
-        
-        print(f"[SERVER] 聚合模型已保存到: {filename}")
-    
-    # ==================== 模型分发逻辑 ====================
     async def get_model_info(self):
-        """获取嵌入模型信息，供客户端验证"""
-        if self.embedding_model_hash is None:
-            # 如果模型尚未初始化，先初始化
-            self._initialize_embedding_model()
-        
+        """获取模型信息"""
         return {
-            "hash": self.embedding_model_hash,
-            "version": "all-MiniLM-L6-v2",
+            "model_hash": self.embedding_model_hash,
             "embedding_dim": self.embedding_dim,
-            "timestamp": datetime.now().isoformat()
+            "model_available": self.embedding_model is not None,
+            "prototypes_count": len(self.prototype_labels) if self.prototype_labels else 0,
+            "client_count": len(self.client_registry),
+            "training_queue_size": len(self.training_queue)
         }
     
-    async def _download_embedding_model(self, model_name: str):
-        """服务器首次运行时下载模型"""
-        print(f"[SERVER] 正在下载嵌入模型 {model_name}...")
-        
-        models_dir = "./models"
-        os.makedirs(models_dir, exist_ok=True)
-        
-        try:
-            # 检查是否可以导入SentenceTransformer
-            from sentence_transformers import SentenceTransformer
-            
-            # 注意：这个下载是在服务器端进行的
-            model = SentenceTransformer(model_name)
-            model.save(f"{models_dir}/{model_name}")
-            print(f"[SERVER] 模型下载完成，保存至 {models_dir}/{model_name}")
-            
-            # 加载模型
-            self.embedding_model = model
-            
-            # 计算并存储模型哈希
-            self.embedding_model_hash = self._compute_model_hash(f"{models_dir}/{model_name}")
-            print(f"[SERVER] 模型哈希: {self.embedding_model_hash[:16]}")
-            
-        except Exception as e:
-            print(f"[SERVER] 下载模型失败: {e}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"无法下载模型: {e}"
-            )
-    
-    def _compute_model_hash(self, model_path: str) -> str:
-        """计算模型目录的哈希值"""
-        import hashlib
-        sha256_hash = hashlib.sha256()
-        
-        for root, dirs, files in os.walk(model_path):
-            for file in sorted(files):  # 按文件名排序确保一致性
-                file_path = os.path.join(root, file)
-                # 将文件名和内容都加入哈希计算
-                sha256_hash.update(file.encode('utf-8'))
-                with open(file_path, 'rb') as f:
-                    while chunk := f.read(8192):
-                        sha256_hash.update(chunk)
-        
-        return sha256_hash.hexdigest()
+    async def start(self):
+        """启动服务器异步服务"""
+        if self.monitor_task is None or self.monitor_task.done():
+            self.monitor_task = asyncio.create_task(self.status_monitor())
+            print("[SERVER] 状态监控任务已启动")
+
+    async def stop(self):
+        """停止服务器异步服务"""
+        if self.monitor_task and not self.monitor_task.done():
+            self.monitor_task.cancel()
+            try:
+                await self.monitor_task
+            except asyncio.CancelledError:
+                pass
+            finally:
+                self.monitor_task = None
+        print("[SERVER] 状态监控任务已停止")
+
+    async def status_monitor(self):
+        """监控客户端状态"""
+        while True:
+            try:
+                current_time = time.time()
+                
+                # 创建客户端副本以避免运行时修改错误
+                clients_copy = dict(self.client_registry)
+                
+                # 检查超时的客户端
+                for client_id, client_info in clients_copy.items():
+                    last_seen = client_info.get("last_heartbeat", 0)
+                    
+                    # 如果客户端超过3个心跳间隔没有响应，则标记为离线
+                    if current_time - last_seen > self.status_check_interval * 3:
+                        print(f"[SERVER] 客户端 {client_id} 超时，标记为离线")
+                        # 更新原始记录
+                        original_info = self.client_registry.get(client_id)
+                        if original_info:
+                            original_info["status"] = "offline"
+                            
+                            # 从训练队列中移除
+                            if client_id in self.training_queue:
+                                try:
+                                    self.training_queue.remove(client_id)
+                                except ValueError:
+                                    pass  # 已经被移除
+                            
+                            # 标记为不在队列中
+                            original_info["in_queue"] = False
+                
+                # 等待下一个检查周期
+                await asyncio.sleep(self.status_check_interval)
+                
+            except Exception as e:
+                print(f"[SERVER] 状态监控出错: {e}")
+                await asyncio.sleep(self.status_check_interval)
     
     async def download_model(self):
-        """
-        提供嵌入模型文件下载
-        支持断点续传和哈希验证
-        """
-        model_name = "all-MiniLM-L6-v2"
+        """下载嵌入模型"""
+        model_name = "all-MiniLM-L6-v2"  # 硬编码模型名称
         model_dir = f"./models/{model_name}"
         
-        # 确保模型存在
         if not os.path.exists(model_dir):
-            # 首次运行时下载模型
-            await self._download_embedding_model(model_name)
+            raise HTTPException(status_code=404, detail="模型文件不存在")
         
-        # 创建压缩包（可选，但推荐）
-        # 临时压缩文件路径
-        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_file:
-            zip_path = tmp_file.name
-            
-            # 压缩模型目录
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                for root, dirs, files in os.walk(model_dir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        # 保持相对路径
-                        arcname = os.path.relpath(file_path, start=os.path.dirname(model_dir))
-                        zipf.write(file_path, arcname)
-            
-            # 计算压缩包哈希值（用于客户端验证）
-            with open(zip_path, 'rb') as f:
-                file_hash = hashlib.sha256(f.read()).hexdigest()
-            
-            # 记录传输日志
-            print(f"[SERVER] 准备发送模型 {model_name}，哈希: {file_hash[:16]}...")
-            
-            # 使用FileResponse提供文件下载
-            response = FileResponse(
-                path=zip_path,
-                media_type='application/zip',
-                filename=f"{model_name}.zip",
-                headers={
-                    "X-Model-Hash": file_hash,
-                    "X-Model-Name": model_name,
-                    "X-Model-Version": "1.0"
-                }
-            )
-            
-            # 异步删除临时文件
-            import asyncio
-            async def cleanup():
-                await asyncio.sleep(5)  # 等待一段时间再删除
-                if os.path.exists(zip_path):
-                    os.remove(zip_path)
-                    print(f"[SERVER] 已清理临时模型文件: {zip_path}")
-            
-            # 启动清理任务
-            asyncio.create_task(cleanup())
-            
-            return response
-
-    # ==================== 后台任务 ====================
-    async def status_monitor(self):
-        """后台状态监控任务"""
-        while True:
-            await asyncio.sleep(self.status_check_interval)
-            
-            current_time = time.time()
-            offline_clients = []
-            
-            for client_id, client_info in list(self.client_registry.items()):
-                # 检查心跳超时
-                if current_time - client_info.get("last_heartbeat", 0) > self.status_check_interval * 3:
-                    if client_info["status"] != "offline":
-                        print(f"[MONITOR] 客户端 {client_id} 心跳超时，标记为离线")
-                        client_info["status"] = "offline"
-                        client_info["last_seen"] = datetime.now().isoformat()
-                        offline_clients.append(client_id)
-            
-            # 从队列中移除离线客户端
-            for client_id in offline_clients:
-                if client_id in self.training_queue:
-                    self.training_queue.remove(client_id)
-            
-            if offline_clients:
-                print(f"[MONITOR] 检测到 {len(offline_clients)} 个离线客户端: {offline_clients}")
+        # 创建临时ZIP文件
+        temp_dir = tempfile.mkdtemp()
+        zip_path = os.path.join(temp_dir, f"{model_name}.zip")
+        
+        # 压缩模型目录
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(model_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arc_path = os.path.relpath(file_path, model_dir)
+                    zipf.write(file_path, arc_path)
+        
+        return FileResponse(
+            zip_path,
+            media_type='application/zip',
+            headers={"Content-Disposition": f"attachment; filename={model_name}.zip"}
+        )

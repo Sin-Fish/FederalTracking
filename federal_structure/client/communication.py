@@ -99,176 +99,71 @@ class CommunicationModule:
                             print(f"[CLIENT] 下载进度: {progress:.1f}% ({downloaded_size}/{total_size} bytes)")
                             last_print_time = current_time
             
-            print(f"[CLIENT] 文件下载完成")
-            
-            # 验证文件完整性
-            downloaded_hash = self._calculate_file_hash(temp_filename)
-            server_hash_response = requests.get(f"{self.server_url}/api/model/hash")
-            if server_hash_response.status_code == 200:
-                server_hash = server_hash_response.json().get("hash", "")
-                if downloaded_hash != server_hash:
-                    print(f"[CLIENT] 文件哈希验证失败")
-                    return False
-                else:
-                    print(f"[CLIENT] 文件哈希验证通过: {server_hash[:16]}...")
-            else:
-                print(f"[CLIENT] 无法获取服务器文件哈希，跳过验证")
-            
-            # 解压文件
-            print(f"[CLIENT] 解压模型文件...")
-            model_cache_dir = "./model_cache"
+            # 创建模型缓存目录
+            model_cache_dir = f"{self.model_cache_path}/{model_name}"
             os.makedirs(model_cache_dir, exist_ok=True)
             
-            extract_path = os.path.join(model_cache_dir, model_name)
+            # 解压模型文件
+            print(f"[CLIENT] 解压模型文件...")
             with zipfile.ZipFile(temp_filename, 'r') as zip_ref:
-                zip_ref.extractall(extract_path)
+                zip_ref.extractall(model_cache_dir)
             
-            # 验证解压后的模型
-            print(f"[CLIENT] 验证解压后的模型...")
-            extracted_hash = self._calculate_directory_hash(extract_path)
-            print(f"[CLIENT] 模型目录哈希: {extracted_hash[:16]}...")
+            # 保存模型哈希
+            hash_file_path = f"{self.model_cache_path}/{model_name}_hash.txt"
+            with open(hash_file_path, 'w') as f:
+                f.write(self.server_model_hash)
             
             # 清理临时文件
             os.remove(temp_filename)
+            if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                os.rmdir(temp_dir)
             
+            print(f"[CLIENT] 模型下载完成: {model_cache_dir}")
             return True
             
         except Exception as e:
-            print(f"[CLIENT] 下载模型时发生错误: {e}")
+            print(f"[CLIENT] 下载模型失败: {e}")
             return False
     
-    def _calculate_file_hash(self, file_path: str) -> str:
-        """计算文件的哈希值"""
-        import hashlib
-        sha256_hash = hashlib.sha256()
+    def load_embedding_model(self, server_model_hash: str):
+        """加载嵌入模型，如果本地没有则从服务器下载"""
+        from sentence_transformers import SentenceTransformer
         
-        try:
-            with open(file_path, 'rb') as f:
-                while chunk := f.read(8192):
-                    sha256_hash.update(chunk)
-            return sha256_hash.hexdigest()
-        except Exception as e:
-            print(f"[CLIENT] 计算文件哈希失败: {e}")
-            return ""
-    
-    def _calculate_directory_hash(self, dir_path: str) -> str:
-        """计算目录的哈希值"""
-        import hashlib
-        sha256_hash = hashlib.sha256()
+        model_path = f"{self.model_cache_path}/{self.model_name}"
         
-        try:
-            for root, dirs, files in os.walk(dir_path):
-                for file in sorted(files):
-                    file_path = os.path.join(root, file)
-                    with open(file_path, 'rb') as f:
-                        # 添加文件名到哈希
-                        rel_path = os.path.relpath(file_path, dir_path)
-                        sha256_hash.update(rel_path.encode('utf-8'))
-                        # 添加文件内容
-                        while chunk := f.read(8192):
-                            sha256_hash.update(chunk)
-            return sha256_hash.hexdigest()
-        except Exception as e:
-            print(f"[CLIENT] 计算目录哈希失败: {e}")
-            return ""
-
-    def _load_embedding_model(self, model_name: str):
-        """从本地缓存加载嵌入模型"""
-        cache_path = f"./model_cache/{model_name}"
-        
-        # 检查模型目录是否存在，如果不存在则检查嵌套目录
-        actual_model_path = cache_path
-        nested_path = os.path.join(cache_path, model_name)
-        if os.path.exists(nested_path):
-            actual_model_path = nested_path
-            print(f"[CLIENT] 检测到嵌套模型目录结构，使用路径: {actual_model_path}")
-        
-        if not os.path.exists(actual_model_path):
-            print(f"[CLIENT] 错误：模型路径不存在: {actual_model_path}")
-            return None
-        
-        try:
-            print(f"[CLIENT] 从本地缓存加载模型: {actual_model_path}")
-            from sentence_transformers import SentenceTransformer
+        # 检查本地是否有匹配哈希的模型
+        if self.check_local_model(server_model_hash):
+            print(f"[CLIENT] 本地已存在匹配的模型，准备加载...")
             
-            # 检查模型目录是否包含必要的文件
-            required_files = ['config.json', 'pytorch_model.bin', 'tokenizer.json', 'tokenizer_config.json', 'vocab.txt']
-            missing_files = []
-            for file in required_files:
-                if not os.path.exists(os.path.join(actual_model_path, file)):
-                    missing_files.append(file)
+            # 检查是否存在嵌套目录结构
+            nested_path = f"{model_path}/{self.model_name}"
+            if os.path.exists(nested_path):
+                print(f"[CLIENT] 检测到嵌套模型目录结构，使用路径: {nested_path}")
+                model_path = nested_path
             
-            if missing_files:
-                print(f"[CLIENT] 错误：模型目录缺少必要文件: {missing_files}")
-                return None
-            
-            # 尝试加载模型
-            self.embedding_model = SentenceTransformer(actual_model_path)
+            print(f"[CLIENT] 从本地缓存加载模型: {model_path}")
+            self.embedding_model = SentenceTransformer(model_path)
             self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
-            print(f"[CLIENT] 模型加载成功，嵌入维度: {self.embedding_dim}")
-            return self.embedding_model
-        except Exception as e:
-            print(f"[CLIENT] 加载模型失败: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-    def load_embedding_model(self):
-        """加载嵌入模型，优先从服务器获取或使用本地缓存"""
-        print("[CLIENT] 准备加载嵌入模型...")
-        
-        # 向服务器请求模型信息
-        try:
-            response = requests.get(
-                f"{self.server_url}/api/system/model_info",
-                timeout=self.request_timeout
-            )
-            
-            if response.status_code == 200:
-                model_info = response.json()
-                model_hash = model_info.get('hash', '')
+        else:
+            # 从服务器下载模型
+            print(f"[CLIENT] 本地模型不存在或哈希不匹配，开始下载...")
+            if self._download_model_from_server(self.model_name):
+                # 下载成功，加载模型
+                nested_path = f"{model_path}/{self.model_name}"
+                if os.path.exists(nested_path):
+                    print(f"[CLIENT] 检测到嵌套模型目录结构，使用路径: {nested_path}")
+                    model_path = nested_path
                 
-                # 检查本地是否有匹配的模型
-                if self.check_local_model(model_hash):
-                    print("[CLIENT] 本地已存在匹配的模型，准备加载...")
-                    # 加载本地缓存模型
-                    model = self._load_embedding_model(self.model_name)
-                    if model is not None:
-                        print("[CLIENT] 嵌入模型加载成功")
-                        return True
-                    else:
-                        print("[CLIENT] 本地模型加载失败")
-                
-                print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:16]}...)")
-                
-                # 从服务器下载模型
-                if self._download_model_from_server(self.model_name):
-                    # 下载成功后，加载模型
-                    model = self._load_embedding_model(self.model_name)
-                    if model is not None:
-                        # 保存哈希值用于后续验证
-                        hash_file_path = f"{self.model_cache_path}/{self.model_name}_hash.txt"
-                        with open(hash_file_path, 'w') as f:
-                            f.write(model_hash)
-                        print("[CLIENT] 从服务器下载的模型加载成功")
-                        return True
-                    else:
-                        print("[CLIENT] 从服务器下载的模型加载失败")
-                        return False
-                else:
-                    print("[CLIENT] 从服务器下载模型失败")
-                    return False
+                print(f"[CLIENT] 从本地缓存加载模型: {model_path}")
+                self.embedding_model = SentenceTransformer(model_path)
+                self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
             else:
-                print(f"[CLIENT] 获取模型信息失败: {response.status_code}")
-                return False
-        except Exception as e:
-            print(f"[CLIENT] 加载嵌入模型时发生错误: {e}")
-            return False
+                print(f"[CLIENT] 模型下载失败，无法继续执行")
+                raise Exception("模型下载失败")
     
     def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
         """将行为字符串转换为嵌入向量"""
-        success = self.load_embedding_model()
-        if not success:
+        if self.embedding_model is None:
             print("[CLIENT] 无法加载嵌入模型，使用随机向量作为嵌入（备用方案）")
             embeddings = np.random.rand(len(strings), self.embedding_dim).astype(np.float32)
             return embeddings
@@ -298,21 +193,26 @@ class CommunicationModule:
             response = requests.post(
                 f"{self.server_url}/api/client/register",
                 json=payload,
-                timeout=self.request_timeout  # 使用更长的超时时间
+                timeout=30  # 增加超时时间
             )
             
             if response.status_code == 200:
                 data = response.json()
                 print(f"[CLIENT] 报到成功: {data}")
+                
+                # 检查服务器返回的模型哈希
+                self.server_model_hash = data.get("model_hash")
+                self.n_prototypes = data.get("n_prototypes", 5)
+                
+                # 加载嵌入模型
+                self.load_embedding_model(self.server_model_hash)
+                
                 self.is_registered = True
                 return True
             else:
                 print(f"[CLIENT] 报到失败: {response.status_code} - {response.text}")
                 return False
                 
-        except requests.exceptions.Timeout:
-            print(f"[CLIENT] 报到超时 (超过{self.request_timeout}秒)")
-            return False
         except Exception as e:
             print(f"[CLIENT] 报到时发生错误: {e}")
             return False
@@ -387,9 +287,12 @@ class CommunicationModule:
         
         # 计算本地数据的嵌入
         if self.data_processor.behavior_embeddings is None:
-            self.data_processor.behavior_embeddings = self.embed_behavior_strings(self.data_processor.behavior_strings)
+            self.data_processor.behavior_embeddings = self.embed_behavior_strings(
+                self.data_processor.behavior_strings
+            )
         
         # 为每个本地向量找到最近的原型
+        from sklearn.metrics.pairwise import pairwise_distances_argmin
         prototype_indices = pairwise_distances_argmin(self.data_processor.behavior_embeddings, prototypes)
         
         # 构建映射
@@ -434,117 +337,85 @@ class CommunicationModule:
             print(f"[CLIENT] 状态更新失败: {e}")
             return False
     
-    def check_readiness(self) -> Optional[Dict]:
-        """等待服务器发起就位检查，检查模型是否需要更新"""
+    def check_readiness(self):
+        """检查客户端就位状态"""
         print(f"[CLIENT] 等待服务器发起就位检查...")
         
         try:
-            # 发送请求到服务器的就位等待端点
+            # 等待服务器发起就位检查（长轮询）
             response = requests.get(
-                f"{self.server_url}/api/client/wait-readiness-check",
-                params={"client_id": self.client_id},
-                timeout=30  # 35秒超时
+                f"{self.server_url}/api/client/wait-readiness-check?client_id={self.client_id}",
+                timeout=360  # 6分钟超时，给服务器足够时间
             )
             
             if response.status_code == 200:
                 data = response.json()
-                if data.get("status") == "ready_check":
-                    print(f"[CLIENT] 收到服务器就位检查指令: {data['message']}")
-                    
-                    # 检查是否需要更新模型
-                    server_model_hash = data.get("model_hash")
-                    if server_model_hash and not self.check_local_model(server_model_hash):
-                        print("[CLIENT] 检测到模型版本不匹配，开始下载新模型...")
-                        if self._download_model_from_server(self.model_name):
-                            # 重新加载模型
-                            self._load_embedding_model(self.model_name)
-                            print("[CLIENT] 模型更新完成")
-                        else:
-                            print("[CLIENT] 模型更新失败")
-                    
-                    # 向服务器发送就位确认
-                    confirm_response = requests.post(
-                        f"{self.server_url}/api/client/confirm-readiness",
-                        params={"client_id": self.client_id},
-                        timeout=self.request_timeout
-                    )
-                    
-                    if confirm_response.status_code == 200:
-                        confirm_data = confirm_response.json()
-                        print(f"[CLIENT] {confirm_data['message']}")
-                    else:
-                        print(f"[CLIENT] 就位确认失败: {confirm_response.status_code}")
-                    
-                    return data
-                elif data.get("status") == "timeout":
-                    print(f"[CLIENT] 等待就位检查超时")
-                    return None
-                else:
-                    print(f"[CLIENT] 就位检查失败: {data}")
-                    return None
-            else:
-                print(f"[CLIENT] 就位检查请求失败: {response.status_code}")
-                return None
+                print(f"[CLIENT] 收到服务器就位检查指令: {data['message']}")
                 
-        except requests.exceptions.Timeout:
-            print(f"[CLIENT] 等待就位检查超时")
-            return None
+                # 确认就位状态
+                confirm_response = requests.post(
+                    f"{self.server_url}/api/client/confirm-readiness?client_id={self.client_id}",
+                    timeout=10
+                )
+                
+                if confirm_response.status_code == 200:
+                    confirm_data = confirm_response.json()
+                    print(f"[CLIENT] 客户端 {self.client_id} 就位确认成功")
+                    
+                    # 检查服务器返回的模型哈希
+                    server_model_hash = data.get('model_hash')
+                    if server_model_hash and self.server_model_hash != server_model_hash:
+                        print(f"[CLIENT] 模型哈希不匹配，下载新模型...")
+                        self.download_model_from_server()
+                    
+                    return True
+                else:
+                    print(f"[CLIENT] 就位确认失败: {confirm_response.status_code}")
+                    return False
+            else:
+                print(f"[CLIENT] 等待就位检查指令失败: {response.status_code}")
+                return False
+                
         except Exception as e:
-            print(f"[CLIENT] 就位检查时发生错误: {e}")
-            return None
+            print(f"[CLIENT] 等待就位检查时发生错误: {e}")
+            return False
     
-    def wait_for_training_start(self) -> Optional[Dict]:
-        """
-        长轮询等待服务器训练开始指令
-        服务器将保持连接直到有训练指令
-        """
-        print(f"[CLIENT] 等待服务器训练开始指令...")
+    def wait_for_training_start(self):
+        """等待服务器训练开始指令"""
+        print("[CLIENT] 等待服务器训练开始指令...")
         
         try:
-            # 发送请求，服务器将保持连接直到有指令
             response = requests.get(
                 f"{self.server_url}/api/training/wait",
                 params={"client_id": self.client_id},
-                timeout=3600  # 设置为1小时超时，允许手动中断
+                timeout=60  # 1分钟超时
             )
             
             if response.status_code == 200:
                 data = response.json()
                 if data.get("status") == "training_start":
-                    print("[CLIENT] 收到服务器训练开始指令!")
-                    # 更新原型信息（如果服务器返回了新的原型）
-                    if "training_info" in data and data["training_info"]:
-                        training_info = data["training_info"]
-                        if training_info.get("prototypes"):
-                            self.global_prototypes = np.array(training_info["prototypes"])
-                        if training_info.get("prototype_labels"):
-                            self.prototype_labels = training_info["prototype_labels"]
+                    print(f"[CLIENT] 收到服务器训练开始指令!")
                     return data
-                elif data.get("status") == "timeout":
-                    print("[CLIENT] 等待训练指令超时")
-                    return None
                 else:
-                    print("[CLIENT] 未收到训练开始指令")
+                    print(f"[CLIENT] 未收到训练开始指令: {data}")
                     return None
             else:
-                print(f"[CLIENT] 等待训练指令失败: {response.status_code}")
+                print(f"[CLIENT] 等待训练开始失败: {response.status_code}")
                 return None
                 
-        except requests.exceptions.Timeout:
-            print(f"[CLIENT] 等待训练指令超时")
-            return None
-        except KeyboardInterrupt:
-            print(f"[CLIENT] 用户中断等待训练指令")
-            return None
         except Exception as e:
-            print(f"[CLIENT] 等待训练指令时发生错误: {e}")
+            print(f"[CLIENT] 等待训练开始时发生错误: {e}")
             return None
     
-    def submit_model_updates(self, local_models: Dict[int, SimpleLSTM], current_round: int, epochs_per_round: int):
+    def submit_model_updates(self, local_models: Dict[int, SimpleLSTM], current_round: int, epochs: int):
         """提交模型更新到服务器"""
         print("[CLIENT] 提交模型更新...")
         
         for proto_id, model in local_models.items():
+            if proto_id not in self.prototype_mapping:
+                print(f"[CLIENT] 原型 {proto_id} 没有分配数据，跳过提交")
+                continue
+                
             data_size = len(self.prototype_mapping[proto_id])
             
             # 获取模型状态
@@ -557,7 +428,7 @@ class CommunicationModule:
                 "data_size": data_size,
                 "metadata": {
                     "round": current_round,
-                    "epochs": epochs_per_round,
+                    "epochs": epochs,
                     "data_points": data_size,
                     "submitted_at": datetime.now().isoformat()
                 }
@@ -567,7 +438,7 @@ class CommunicationModule:
                 response = requests.post(
                     f"{self.server_url}/api/model/update",
                     json=payload,
-                    timeout=self.request_timeout  # 使用更长的超时时间
+                    timeout=60  # 增加超时时间
                 )
                 
                 if response.status_code == 200:
@@ -575,8 +446,6 @@ class CommunicationModule:
                 else:
                     print(f"[CLIENT] 原型{proto_id}的模型更新提交失败: {response.status_code}")
                     
-            except requests.exceptions.Timeout:
-                print(f"[CLIENT] 原型{proto_id}的模型更新提交超时 (超过{self.request_timeout}秒)")
             except Exception as e:
                 print(f"[CLIENT] 提交模型更新时发生错误: {e}")
     
@@ -592,3 +461,57 @@ class CommunicationModule:
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
         print(f"[CLIENT] 心跳线程已启动，间隔: {interval}秒")
+    
+    def cluster_local_data(self):
+        """对本地数据进行聚类"""
+        # 确保嵌入模型已加载
+        if self.embedding_model is None:
+            print("[CLIENT] 加载嵌入模型用于本地聚类...")
+            self.load_embedding_model()
+        
+        # 使用本地行为字符串进行聚类
+        behavior_strings = self.data_processor.behavior_strings
+        if len(behavior_strings) == 0:
+            print("[CLIENT] 错误：没有可用的行为数据进行聚类")
+            return None
+        
+        # 生成嵌入向量
+        print(f"[CLIENT] 为 {len(behavior_strings)} 个行为字符串生成嵌入向量...")
+        embeddings = self.embedding_model.encode(behavior_strings)
+        
+        # 使用K-Means聚类
+        from sklearn.cluster import KMeans
+        n_clusters = min(len(behavior_strings), self.n_prototypes or 2)  # 使用服务器指定的原型数量
+        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        cluster_labels = kmeans.fit_predict(embeddings)
+        
+        # 获取聚类中心
+        cluster_centers = kmeans.cluster_centers_
+        
+        print(f"[CLIENT] 本地数据聚类完成，生成 {n_clusters} 个聚类中心")
+        return cluster_centers.tolist()
+
+    def send_local_prototypes(self):
+        """发送本地聚类中心到服务器"""
+        try:
+            print(f"[CLIENT] 开始对本地数据进行聚类...")
+            local_prototypes = self.cluster_local_data()
+            
+            if local_prototypes is None:
+                print("[CLIENT] 本地聚类失败，无法发送聚类中心")
+                return False
+            
+            # 发送聚类中心到服务器
+            url = f"{self.server_url}/api/client/prototypes?client_id={self.client_id}"
+            response = requests.post(url, json=local_prototypes, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                print(f"[CLIENT] 聚类中心发送成功: {result}")
+                return True
+            else:
+                print(f"[CLIENT] 聚类中心发送失败: {response.status_code}, {response.text}")
+                return False
+        except Exception as e:
+            print(f"[CLIENT] 发送聚类中心时发生错误: {e}")
+            return False
