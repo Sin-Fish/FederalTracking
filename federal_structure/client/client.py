@@ -115,17 +115,8 @@ class FederatedClient:
     
     def fetch_prototypes(self) -> bool:
         """从服务器获取全局原型"""
-        # 需要将嵌入模型设置到communication模块
-        # 这里需要先加载数据和嵌入模型
-        if not self.data_processor.behavior_strings:
-            self.process_raw_data()
-        
-        if self.data_processor.behavior_embeddings is None:
-            self.data_processor.behavior_embeddings = self.embed_behavior_strings(self.data_processor.behavior_strings)
-        
-        success = self.communication.fetch_prototypes()
-        return success
-    
+        return self.communication.fetch_prototypes()
+
     def send_status_update(self, status: str, progress: Optional[float] = None) -> bool:
         """向服务器发送状态更新"""
         return self.communication.send_status_update(status, progress)
@@ -134,11 +125,13 @@ class FederatedClient:
         """提交模型更新到服务器"""
         local_models = self.training.local_models
         self.communication.submit_model_updates(local_models, self.training.current_round, self.training.epochs_per_round)
-    
+
     def start_heartbeat(self, interval: int = 30):
         """启动心跳线程"""
         self.communication.start_heartbeat(interval)
     
+    # ==================== 训练指令监听 ====================
+
     # ==================== 主流程控制 ====================
     def run_full_pipeline(self, data_path: Optional[str] = None):
         """运行完整的客户端流程"""
@@ -174,40 +167,26 @@ class FederatedClient:
             print("[CLIENT] 获取原型失败，退出流程")
             return
         
-        # 7. 等待训练开始信号（在实际系统中，这里应该监听服务器指令）
-        print("[CLIENT] 等待训练开始...")
-        # 这里可以添加轮询服务器状态的逻辑
-        
-        # 8. 模型预检查：验证数据与原型的兼容性
-        print("[CLIENT] 执行模型预检查...")
-        compatible, diagnosis = self._check_data_compatibility()
-        
-        if not compatible:
-            error_msg = f"模型预检查失败: {diagnosis.get('error', '数据与全局原型不兼容')}"
-            print(f"[CLIENT] {error_msg}")
-            print(f"[CLIENT] 诊断信息: {diagnosis}")
-            self.send_status_update("precheck_failed", 0.0)
+        # 7. 等待训练开始信号
+        print("[CLIENT] 等待服务器训练开始指令...")
+        training_info = self.communication.wait_for_training_start()
+        if not training_info:
+            print("[CLIENT] 未收到训练开始指令，退出流程")
             return
-        else:
-            print(f"[CLIENT] 模型预检查通过")
-            print(f"[CLIENT] 平均距离: {diagnosis['avg_distance']:.4f}, 标准差: {diagnosis['std_distance']:.4f}")
-            self.send_status_update("precheck_passed", 0.5)
         
-        # 9. 开始本地训练
+        # 8. 开始本地训练
+        print("[CLIENT] 开始本地训练...")
         local_models = self.training.train_local_models(
             self.data_processor.behavior_embeddings, 
             self.communication.prototype_mapping
         )
         
-        # 10. 提交模型更新
+        # 9. 提交模型更新
         self.submit_model_updates()
         
         print("\n" + "="*60)
         print("客户端流程完成！")
         print("="*60)
-        
-        # 发送完成状态
-        self.send_status_update("completed", 1.0)
 
 
 # ==================== 命令行接口 ====================

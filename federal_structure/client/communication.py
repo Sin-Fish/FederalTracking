@@ -31,7 +31,7 @@ class CommunicationModule:
         # 通信状态
         self.is_registered = False
         self.last_heartbeat = time.time()
-        self.request_timeout = 30  # 增加请求超时时间
+        self.request_timeout = 60  # 增加请求超时时间，以适应长轮询
         
         # 嵌入模型
         self.embedding_model = None
@@ -436,6 +436,50 @@ class CommunicationModule:
         except Exception as e:
             print(f"[CLIENT] 状态更新失败: {e}")
             return False
+    
+    def wait_for_training_start(self, timeout: int = 300) -> Optional[Dict]:
+        """
+        长轮询等待服务器训练开始指令
+        服务器将保持连接直到有训练指令或超时
+        """
+        print(f"[CLIENT] 等待服务器训练开始指令 (最长 {timeout} 秒)...")
+        
+        try:
+            # 发送请求，服务器将保持连接直到有指令或超时
+            response = requests.get(
+                f"{self.server_url}/api/training/wait",
+                params={"client_id": self.client_id},
+                timeout=timeout+10  # 设置比等待时间稍长的超时
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "training_start":
+                    print("[CLIENT] 收到服务器训练开始指令!")
+                    # 更新原型信息（如果服务器返回了新的原型）
+                    if "training_info" in data and data["training_info"]:
+                        training_info = data["training_info"]
+                        if training_info.get("prototypes"):
+                            self.global_prototypes = np.array(training_info["prototypes"])
+                        if training_info.get("prototype_labels"):
+                            self.prototype_labels = training_info["prototype_labels"]
+                    return data
+                elif data.get("status") == "timeout":
+                    print("[CLIENT] 等待训练指令超时")
+                    return None
+                else:
+                    print("[CLIENT] 未收到训练开始指令")
+                    return None
+            else:
+                print(f"[CLIENT] 等待训练指令失败: {response.status_code}")
+                return None
+                
+        except requests.exceptions.Timeout:
+            print(f"[CLIENT] 等待训练指令超时 ({timeout}秒)")
+            return None
+        except Exception as e:
+            print(f"[CLIENT] 等待训练指令时发生错误: {e}")
+            return None
     
     def submit_model_updates(self, local_models: Dict[int, SimpleLSTM], current_round: int, epochs_per_round: int):
         """提交模型更新到服务器"""

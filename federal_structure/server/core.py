@@ -42,6 +42,9 @@ class FederatedServerCore:
         self.embedding_model = None
         self.embedding_model_hash = None
         self.embedding_dim = 384
+        
+        # 训练状态跟踪
+        self.training_start_events: Dict[str, asyncio.Event] = {}  # 用于跟踪客户端训练开始事件
 
     # ==================== 核心业务逻辑 ====================
     async def handle_client_register(self, req):
@@ -54,7 +57,8 @@ class FederatedServerCore:
             self.client_registry[client_id].update({
                 "last_heartbeat": time.time(),
                 "data_fingerprint": req.data_fingerprint,
-                "status": "idle"
+                "status": "idle",
+                "last_seen": datetime.now().isoformat()
             })
             return {"status": "updated", "client_id": client_id}
         
@@ -67,11 +71,15 @@ class FederatedServerCore:
             "status": "idle",
             "registered_at": datetime.now().isoformat(),
             "last_heartbeat": time.time(),
+            "last_seen": datetime.now().isoformat(),
             "training_round": 0,
             "in_queue": False
         }
         
         self.client_registry[client_id] = client_info
+        
+        # 为客户端创建训练开始事件
+        self.training_start_events[client_id] = asyncio.Event()
         
         # 验证数据格式（这里可以添加更复杂的验证逻辑）
         if req.sample_count < 100:
@@ -102,6 +110,7 @@ class FederatedServerCore:
         client = self.client_registry[client_id]
         client["status"] = status_update.status
         client["last_heartbeat"] = time.time()
+        client["last_seen"] = datetime.now().isoformat()
         
         if status_update.progress is not None:
             client["progress"] = status_update.progress
@@ -237,12 +246,29 @@ class FederatedServerCore:
                 self.client_registry[client_id]["progress"] = 0.0
                 self.client_registry[client_id]["training_round"] += 1
         
+        # 主动向所有客户端发送训练开始指令
+        await self.notify_clients_training_start(training_info)
+        
         return {
             "status": "training_started",
             "client_count": len(self.training_queue),
             "training_info": training_info
         }
     
+    async def notify_clients_training_start(self, training_info: Dict):
+        """主动向所有客户端发送训练开始指令"""
+        print(f"[SERVER] 向 {len(self.training_queue)} 个客户端发送训练开始指令...")
+        
+        # 为每个客户端设置训练开始事件
+        for client_id in self.training_queue:
+            if client_id in self.client_registry:
+                if client_id in self.training_start_events:
+                    # 设置事件，通知客户端训练已开始
+                    self.training_start_events[client_id].set()
+                    print(f"[SERVER] 已通知客户端 {client_id} 开始训练")
+        
+        print(f"[SERVER] 训练开始指令已发送给所有客户端")
+
     async def handle_model_update(self, update: ModelUpdate):
         """处理模型更新"""
         client_id = update.client_id
@@ -360,7 +386,7 @@ class FederatedServerCore:
     # ==================== 模型分发逻辑 ====================
     async def get_model_info(self):
         """获取嵌入模型信息，供客户端验证"""
-        if self.model_hash is None:
+        if self.embedding_model_hash is None:
             # 如果模型尚未初始化，先初始化
             if self.embedding_model is None:
                 await self._download_embedding_model('all-MiniLM-L6-v2')
@@ -490,9 +516,13 @@ class FederatedServerCore:
                     if client_info["status"] != "offline":
                         print(f"[MONITOR] 客户端 {client_id} 心跳超时，标记为离线")
                         client_info["status"] = "offline"
+                        client_info["last_seen"] = datetime.now().isoformat()
                         offline_clients.append(client_id)
             
             # 从队列中移除离线客户端
             for client_id in offline_clients:
                 if client_id in self.training_queue:
                     self.training_queue.remove(client_id)
+            
+            if offline_clients:
+                print(f"[MONITOR] 检测到 {len(offline_clients)} 个离线客户端: {offline_clients}")

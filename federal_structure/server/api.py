@@ -1,5 +1,6 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, FileResponse
+import asyncio
 
 from models import ClientRegister, ClientStatus, DataSubmission, ModelUpdate
 from core import FederatedServerCore
@@ -45,6 +46,42 @@ class FederatedServerAPI:
         async def start_training():
             """启动训练（管理员接口）"""
             return await self.core.initiate_training()
+        
+        @self.app.get("/api/training/wait")
+        async def wait_for_training_start(client_id: str = Query(..., description="客户端ID")):
+            """客户端等待训练开始指令（长轮询）"""
+            # 检查客户端是否已注册
+            if client_id not in self.core.client_registry:
+                raise HTTPException(status_code=404, detail="客户端未注册")
+            
+            # 检查客户端是否在训练队列中
+            if client_id not in self.core.training_queue:
+                raise HTTPException(status_code=400, detail="客户端不在训练队列中")
+            
+            # 获取客户端的训练开始事件
+            event = self.core.training_start_events.get(client_id)
+            if not event:
+                raise HTTPException(status_code=500, detail="客户端事件未初始化")
+            
+            # 等待事件被设置（最多等待30秒）
+            try:
+                await asyncio.wait_for(event.wait(), timeout=30.0)
+                
+                # 返回训练信息
+                return {
+                    "status": "training_start",
+                    "message": "训练已开始，请开始本地训练",
+                    "training_info": {
+                        "prototypes": self.core.global_prototypes.tolist() if self.core.global_prototypes is not None else None,
+                        "prototype_labels": self.core.prototype_labels,
+                    }
+                }
+            except asyncio.TimeoutError:
+                # 超时返回
+                return {
+                    "status": "timeout",
+                    "message": "等待训练指令超时"
+                }
         
         @self.app.post("/api/model/update")
         async def submit_update(update: ModelUpdate):
