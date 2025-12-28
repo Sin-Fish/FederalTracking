@@ -16,7 +16,34 @@ class SimpleLSTM(nn.Module):
     
     def get_state_dict(self):
         """获取可序列化的状态字典"""
-        return {k: v.cpu().numpy().tolist() for k, v in self.state_dict().items()}
+        import numpy as np
+        
+        def convert_to_python_type(obj):
+            """将numpy类型转换为Python原生类型"""
+            if isinstance(obj, np.ndarray):
+                # 将numpy数组转换为Python列表，并确保所有元素都是原生类型
+                return [convert_to_python_type(item) for item in obj.tolist()]
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, list):
+                return [convert_to_python_type(item) for item in obj]
+            elif isinstance(obj, (int, float, str, bool, type(None))):
+                return obj
+            else:
+                # 如果是其他类型，尝试转换为numpy然后tolist
+                try:
+                    return convert_to_python_type(np.asarray(obj).tolist())
+                except:
+                    return obj
+        
+        state_dict = {}
+        for k, v in self.state_dict().items():
+            numpy_val = v.cpu().numpy()
+            state_dict[k] = convert_to_python_type(numpy_val)
+        
+        return state_dict
     
     def load_state_dict(self, state_dict):
         """加载状态字典"""

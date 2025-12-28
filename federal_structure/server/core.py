@@ -513,16 +513,26 @@ class FederatedServerCore:
         
         print(f"[SERVER] 收到客户端 {client_id} 原型 {prototype_id} 的模型更新，数据量: {update.data_size}")
         
-        # 检查是否所有客户端的更新都已收集
+        # 打印当前模型更新状态
+        print("[SERVER] 当前模型更新状态:")
+        for pid in range(self.n_prototypes):
+            count = len(self.model_updates[pid])
+            print(f"  原型 {pid}: {count} 个更新")
+        
+        # 检查是否所有原型的更新都已收集（每个原型至少有一个更新）
         all_updates_collected = True
         for pid in range(self.n_prototypes):
             if len(self.model_updates[pid]) == 0:
+                print(f"[SERVER] 原型 {pid} 还没有收到任何更新")
                 all_updates_collected = False
                 break
         
         if all_updates_collected:
-            print("[SERVER] 所有模型更新已收集，准备聚合")
-            # 可以在这里触发聚合过程
+            print("[SERVER] 所有原型的模型更新已收集，准备聚合")
+            # 触发聚合过程
+            await self.perform_federated_averaging()
+        else:
+            print("[SERVER] 模型更新尚未收集完整，继续等待")
         
         return {"status": "received", "update_id": f"{client_id}_{prototype_id}"}
     

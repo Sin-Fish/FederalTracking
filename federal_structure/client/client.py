@@ -181,6 +181,8 @@ class FederatedClient:
             self.data_processor.behavior_embeddings, 
             self.communication.prototype_mapping
         )
+        # 保存训练好的模型到训练模块
+        self.training.local_models = local_models
         # 训练完成后更新状态为完成
         self.communication.send_status_update("finished", 1.0)
         

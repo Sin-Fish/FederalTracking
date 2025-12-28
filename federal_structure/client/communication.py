@@ -421,36 +421,52 @@ class CommunicationModule:
                 
             data_size = len(self.prototype_mapping[proto_id])
             
-            # 获取模型状态
+            # 获取模型状态 - 现在模型的get_state_dict方法已确保返回可序列化类型
             state_dict = model.get_state_dict()
             
             payload = {
                 "client_id": self.client_id,
                 "prototype_id": proto_id,
                 "model_state_dict": state_dict,
-                "data_size": data_size,
+                "data_size": int(data_size),
                 "metadata": {
-                    "round": current_round,
-                    "epochs": epochs,
-                    "data_points": data_size,
+                    "round": int(current_round),
+                    "epochs": int(epochs),
+                    "data_points": int(data_size),
                     "submitted_at": datetime.now().isoformat()
                 }
             }
             
+            print(f"[CLIENT] 正在提交原型{proto_id}的模型更新，数据量: {data_size}")
+            print(f"[CLIENT] 请求将发送到: {self.server_url}/api/model/update")
+            
             try:
+                # 在发送请求前输出信息
+                print(f"[CLIENT] 正在发送POST请求到服务器...")
+                
                 response = requests.post(
                     f"{self.server_url}/api/model/update",
                     json=payload,
                     timeout=60  # 增加超时时间
                 )
                 
+                print(f"[CLIENT] 服务器响应状态码: {response.status_code}")
+                print(f"[CLIENT] 服务器响应内容: {response.text}")
+                
                 if response.status_code == 200:
-                    print(f"[CLIENT] 原型{proto_id}的模型更新提交成功")
+                    result = response.json()
+                    print(f"[CLIENT] 原型{proto_id}的模型更新提交成功: {result}")
                 else:
                     print(f"[CLIENT] 原型{proto_id}的模型更新提交失败: {response.status_code}")
                     
+            except requests.exceptions.Timeout:
+                print(f"[CLIENT] 提交模型更新超时 (超过60秒)")
+            except requests.exceptions.RequestException as e:
+                print(f"[CLIENT] 提交模型更新时发生网络错误: {e}")
             except Exception as e:
                 print(f"[CLIENT] 提交模型更新时发生错误: {e}")
+        
+        print("[CLIENT] 模型更新提交完成")
     
     def start_heartbeat(self, interval: int = 30):
         """启动心跳线程"""
