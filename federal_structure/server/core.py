@@ -566,8 +566,8 @@ class FederatedServerCore:
             print("[SERVER] 没有模型更新可用于聚合")
             return {"status": "no_updates"}
         
-        # 对每个原型聚合模型更新
-        for prototype_id in range(self.n_prototypes):
+        # 修复：遍历实际存在的原型ID，而不是range(self.n_prototypes)
+        for prototype_id in list(self.model_updates.keys()):
             updates = self.model_updates[prototype_id]
             if not updates:
                 continue
@@ -595,17 +595,40 @@ class FederatedServerCore:
                 
                 avg_state[key] = weighted_sum / total_weight
             
+            # 确保全局模型存在，如果不存在则根据客户端模型的参数创建
+            if prototype_id not in self.global_models:
+                print(f"[SERVER] 为原型 {prototype_id} 初始化全局模型")
+                
+                # 从第一个模型更新中推断正确的模型参数
+                first_update_state = updates[0]["model_state_dict"]
+                
+                # 从状态字典中推断模型参数（现在是列表格式）
+                # 转换为numpy数组以获取形状信息
+                fc_weight_array = np.array(first_update_state['fc.weight'])
+                output_size = fc_weight_array.shape[0]  # 输出维度
+                hidden_size = fc_weight_array.shape[1]  # 隐藏层维度
+                
+                lstm_ih_weight_array = np.array(first_update_state['lstm.weight_ih_l0'])
+                input_size = lstm_ih_weight_array.shape[1]  # 输入维度
+                
+                # 创建具有正确参数的模型
+                self.global_models[prototype_id] = SimpleLSTM(
+                    input_size=input_size,
+                    hidden_size=hidden_size,
+                    output_size=output_size
+                )
+            
             # 更新全局模型
             self.global_models[prototype_id].load_state_dict(avg_state)
         
         # 清空模型更新
         self.model_updates.clear()
-        print(f"[SERVER] 联邦平均完成，聚合了 {self.n_prototypes} 个原型的模型")
+        print(f"[SERVER] 联邦平均完成，聚合了 {len(self.global_models)} 个原型的模型")
         
         return {
             "status": "aggregated",
-            "aggregated_prototypes": self.n_prototypes,
-            "model_updates_count": len(updates)
+            "aggregated_prototypes": len(self.global_models),
+            "model_updates_count": sum(len(updates) for updates in self.model_updates.values())
         }
     
     async def get_model_info(self):
