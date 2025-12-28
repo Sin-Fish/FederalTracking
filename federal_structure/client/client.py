@@ -175,10 +175,14 @@ class FederatedClient:
         
         # 9. 开始本地训练
         print("[CLIENT] 开始本地训练...")
+        # 更新状态为训练中
+        self.communication.send_status_update("training", 0.0)
         local_models = self.training.train_local_models(
             self.data_processor.behavior_embeddings, 
             self.communication.prototype_mapping
         )
+        # 训练完成后更新状态为完成
+        self.communication.send_status_update("finished", 1.0)
         
         # 10. 提交模型更新
         self.submit_model_updates()

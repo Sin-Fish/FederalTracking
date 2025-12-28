@@ -312,6 +312,9 @@ class CommunicationModule:
     
     def send_status_update(self, status: str, progress: Optional[float] = None) -> bool:
         """向服务器发送状态更新"""
+        # 更新当前状态，以便心跳线程可以发送正确的状态
+        self.current_status = status
+        
         payload = {
             "client_id": self.client_id,
             "status": status,
@@ -451,12 +454,13 @@ class CommunicationModule:
     
     def start_heartbeat(self, interval: int = 30):
         """启动心跳线程"""
+        self.current_status = "idle"  # 添加一个状态变量来跟踪当前状态
+        
         def heartbeat_loop():
             while True:
                 time.sleep(interval)
-                # 状态应该是由主程序控制的，这里只是发送上次已知状态
-                # 在实际应用中，这里应该获取当前状态
-                self.send_status_update("idle")  # 临时使用idle状态
+                # 发送当前状态而不是固定的idle状态
+                self.send_status_update(self.current_status)
         
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
