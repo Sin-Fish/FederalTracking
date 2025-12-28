@@ -625,11 +625,45 @@ class FederatedServerCore:
         self.model_updates.clear()
         print(f"[SERVER] 联邦平均完成，聚合了 {len(self.global_models)} 个原型的模型")
         
+        # 保存聚合后的模型
+        self.save_aggregated_models()
+        
         return {
             "status": "aggregated",
             "aggregated_prototypes": len(self.global_models),
             "model_updates_count": sum(len(updates) for updates in self.model_updates.values())
         }
+    
+    def save_aggregated_models(self):
+        """保存聚合后的模型"""
+        import os
+        import pickle
+        from datetime import datetime
+        
+        # 创建模型保存目录
+        models_dir = "./aggregated_models"
+        os.makedirs(models_dir, exist_ok=True)
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{models_dir}/aggregated_models_{timestamp}.pkl"
+        
+        # 准备保存的数据
+        models_state_dict = {}
+        for proto_id, model in self.global_models.items():
+            models_state_dict[proto_id] = model.state_dict()
+        
+        save_data = {
+            "models": models_state_dict,
+            "prototypes": self.global_prototypes.tolist() if self.global_prototypes is not None else None,
+            "prototype_labels": self.prototype_labels,
+            "timestamp": timestamp,
+            "n_prototypes": self.n_prototypes
+        }
+        
+        with open(filename, 'wb') as f:
+            pickle.dump(save_data, f)
+        
+        print(f"[SERVER] 聚合模型已保存到: {filename}")
     
     async def get_model_info(self):
         """获取模型信息"""
