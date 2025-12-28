@@ -201,19 +201,41 @@ class CommunicationModule:
         """从本地缓存加载嵌入模型"""
         cache_path = f"./model_cache/{model_name}"
         
-        if not os.path.exists(cache_path):
-            print(f"[CLIENT] 错误：模型缓存不存在于 {cache_path}")
+        # 检查模型目录是否存在，如果不存在则检查嵌套目录
+        actual_model_path = cache_path
+        nested_path = os.path.join(cache_path, model_name)
+        if os.path.exists(nested_path):
+            actual_model_path = nested_path
+            print(f"[CLIENT] 检测到嵌套模型目录结构，使用路径: {actual_model_path}")
+        
+        if not os.path.exists(actual_model_path):
+            print(f"[CLIENT] 错误：模型路径不存在: {actual_model_path}")
             return None
         
         try:
-            print(f"[CLIENT] 从本地缓存加载模型: {cache_path}")
+            print(f"[CLIENT] 从本地缓存加载模型: {actual_model_path}")
             from sentence_transformers import SentenceTransformer
-            self.embedding_model = SentenceTransformer(cache_path)
+            
+            # 检查模型目录是否包含必要的文件
+            required_files = ['config.json', 'pytorch_model.bin', 'tokenizer.json', 'tokenizer_config.json', 'vocab.txt']
+            missing_files = []
+            for file in required_files:
+                if not os.path.exists(os.path.join(actual_model_path, file)):
+                    missing_files.append(file)
+            
+            if missing_files:
+                print(f"[CLIENT] 错误：模型目录缺少必要文件: {missing_files}")
+                return None
+            
+            # 尝试加载模型
+            self.embedding_model = SentenceTransformer(actual_model_path)
             self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
             print(f"[CLIENT] 模型加载成功，嵌入维度: {self.embedding_dim}")
             return self.embedding_model
         except Exception as e:
             print(f"[CLIENT] 加载模型失败: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def load_embedding_model(self):
