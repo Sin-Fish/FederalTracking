@@ -7,7 +7,7 @@ from typing import List, Optional, Dict, Any
 from collections import Counter
 import numpy as np
 
-from .privacy_filter import PrivacyFilter
+from privacy_filter import PrivacyFilter
 
 
 class DataProcessor:

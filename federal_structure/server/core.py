@@ -16,8 +16,8 @@ from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from collections import Counter
 
-from .ml_models import SimpleLSTM
-from .models import ModelUpdate
+from ml_models import SimpleLSTM
+from models import ModelUpdate
 
 
 class FederatedServerCore:

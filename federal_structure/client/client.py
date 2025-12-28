@@ -13,10 +13,10 @@ import numpy as np
 import requests
 from sentence_transformers import SentenceTransformer
 
-from .data_processor import DataProcessor
-from .communication import CommunicationModule
-from .training import TrainingModule
-from .models import SimpleLSTM
+from data_processor import DataProcessor
+from communication import CommunicationModule
+from training import TrainingModule
+from models import SimpleLSTM
 
 
 # ==================== 客户端核心类 ====================

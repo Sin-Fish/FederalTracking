@@ -8,8 +8,8 @@ import numpy as np
 from sklearn.metrics.pairwise import pairwise_distances_argmin
 from sentence_transformers import SentenceTransformer
 
-from .data_processor import DataProcessor
-from .models import SimpleLSTM
+from data_processor import DataProcessor
+from models import SimpleLSTM
 
 
 class CommunicationModule:
@@ -29,6 +29,24 @@ class CommunicationModule:
         self.is_registered = False
         self.last_heartbeat = time.time()
         
+        # 嵌入模型
+        self.embedding_model = None
+        self.embedding_dim = 384
+    
+    def load_embedding_model(self):
+        """加载嵌入模型"""
+        if self.embedding_model is None:
+            print("[CLIENT] 加载嵌入模型...")
+            self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+    
+    def embed_behavior_strings(self, strings: List[str]) -> np.ndarray:
+        """将行为字符串转换为嵌入向量"""
+        self.load_embedding_model()
+        
+        print(f"[CLIENT] 嵌入 {len(strings)} 个行为字符串...")
+        embeddings = self.embedding_model.encode(strings, show_progress_bar=False)
+        return embeddings
+    
     def register_to_server(self) -> bool:
         """向服务器报到"""
         print("[CLIENT] 向服务器报到...")

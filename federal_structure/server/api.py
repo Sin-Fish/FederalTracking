@@ -1,8 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from .models import ClientRegister, ClientStatus, DataSubmission, ModelUpdate
-from .core import FederatedServerCore
+from models import ClientRegister, ClientStatus, DataSubmission, ModelUpdate
+from core import FederatedServerCore
 
 
 class FederatedServerAPI:

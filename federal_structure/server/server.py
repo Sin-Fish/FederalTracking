@@ -1,6 +1,6 @@
 import asyncio
 import argparse
-from .api import FederatedServerAPI
+from api import FederatedServerAPI
 
 # ==================== 启动服务器 ====================
 def start_server(host="0.0.0.0", port=8000, n_prototypes=5):

@@ -5,7 +5,7 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 
-from .models import SimpleLSTM
+from models import SimpleLSTM
 
 
 class TrainingModule:

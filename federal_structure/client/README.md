@@ -33,6 +33,7 @@ python client.py --server http://localhost:8000 --privacy medium --data ./data.j
 ```
 
 参数说明：
+
 - `--server`：服务器地址，默认为http://localhost:8000
 - `--client-id`：客户端ID（默认自动生成）
 - `--data`：数据文件路径（JSON或JSONL格式）
@@ -59,10 +60,12 @@ python client.py --server http://localhost:8000 --privacy medium --data ./data.j
 ## 数据格式
 
 客户端支持以下数据格式：
+
 - JSON：数组格式
 - JSONL：每行一个JSON对象
 
 数据应包含以下字段：
+
 - `timestamp`：时间戳
 - `environment`：环境信息
   - `process_name`：进程名称
