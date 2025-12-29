@@ -700,6 +700,9 @@ class FederatedServerCore:
         # 重置客户端完成状态，为下一轮训练做准备
         self.client_finished_prototypes.clear()
         
+        # 测试聚合模型
+        await self.test_aggregated_models()
+        
         return {
             "status": "aggregated",
             "aggregated_prototypes": len(self.global_models),
@@ -736,6 +739,63 @@ class FederatedServerCore:
             pickle.dump(save_data, f)
         
         print(f"[SERVER] 聚合模型已保存到: {filename}")
+    
+    async def test_aggregated_models(self):
+        """使用测试数据测试聚合后的模型"""
+        print("[SERVER] 开始测试聚合模型...")
+        
+        # 查找最新的测试数据文件
+        test_data_dir = "./test_data"
+        if not os.path.exists(test_data_dir):
+            print(f"[SERVER] 测试数据目录不存在: {test_data_dir}")
+            return
+        
+        # 获取所有jsonl格式的测试数据文件
+        test_files = [f for f in os.listdir(test_data_dir) if f.endswith('.jsonl')]
+        if not test_files:
+            print(f"[SERVER] 在 {test_data_dir} 中未找到测试数据文件")
+            return
+        
+        # 选择最新的测试数据文件
+        latest_test_file = max(
+            [os.path.join(test_data_dir, f) for f in test_files],
+            key=os.path.getctime
+        )
+        
+        # 查找最新保存的聚合模型文件
+        aggregated_models_dir = "./aggregated_models"
+        if not os.path.exists(aggregated_models_dir):
+            print(f"[SERVER] 聚合模型目录不存在: {aggregated_models_dir}")
+            return
+        
+        model_files = [f for f in os.listdir(aggregated_models_dir) if f.endswith('.pkl')]
+        if not model_files:
+            print(f"[SERVER] 在 {aggregated_models_dir} 中未找到聚合模型文件")
+            return
+        
+        # 选择最新的模型文件
+        latest_model_file = max(
+            [os.path.join(aggregated_models_dir, f) for f in model_files],
+            key=os.path.getctime
+        )
+        
+        print(f"[SERVER] 使用测试数据: {latest_test_file}")
+        print(f"[SERVER] 使用聚合模型: {latest_model_file}")
+        
+        # 导入测试模块并运行测试
+        try:
+            from test_model import test_aggregated_model
+            loop = asyncio.get_event_loop()
+            # 在线程池中运行测试，避免阻塞服务器
+            await loop.run_in_executor(None, test_aggregated_model, latest_test_file, latest_model_file)
+            
+            print("[SERVER] 模型测试完成")
+        except ImportError:
+            print("[SERVER] 无法导入测试模块 test_model.py")
+        except Exception as e:
+            print(f"[SERVER] 模型测试过程中出现错误: {e}")
+            import traceback
+            traceback.print_exc()
     
     async def get_model_info(self):
         """获取模型信息"""
