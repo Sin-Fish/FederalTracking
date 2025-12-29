@@ -52,6 +52,12 @@ class FederatedServerCore:
         self.client_training_status: Dict[str, str] = {}  # 跟踪客户端当前状态（training/finished等）
         self.client_expected_prototypes_count: Dict[str, int] = {}  # 记录每个客户端应该完成的原型数量
         
+        # 跟踪已标记为离线的客户端，避免重复打印
+        self.offline_clients: set = set()
+        
+        # 跟踪客户端超时次数，多次超时后移除客户端
+        self.client_timeout_counts: Dict[str, int] = {}
+        
         # 初始化时尝试加载本地模型
         self._initialize_embedding_model()
         
@@ -775,21 +781,65 @@ class FederatedServerCore:
                     
                     # 如果客户端超过3个心跳间隔没有响应，则标记为离线
                     if current_time - last_seen > self.status_check_interval * 3:
-                        print(f"[SERVER] 客户端 {client_id} 超时，标记为离线")
-                        # 更新原始记录
-                        original_info = self.client_registry.get(client_id)
-                        if original_info:
-                            original_info["status"] = "offline"
+                        # 检查是否已经记录过此客户端的超时
+                        if client_id not in self.offline_clients:
+                            # 增加超时计数
+                            self.client_timeout_counts[client_id] = self.client_timeout_counts.get(client_id, 0) + 1
                             
-                            # 从训练队列中移除
-                            if client_id in self.training_queue:
-                                try:
-                                    self.training_queue.remove(client_id)
-                                except ValueError:
-                                    pass  # 已经被移除
-                            
-                            # 标记为不在队列中
-                            original_info["in_queue"] = False
+                            # 如果超时次数超过3次，则从注册表和队列中移除客户端
+                            if self.client_timeout_counts[client_id] >= 3:
+                                print(f"[SERVER] 客户端 {client_id} 连续超时，取消注册并从队列中移除")
+                                
+                                # 从训练队列中移除
+                                if client_id in self.training_queue:
+                                    try:
+                                        self.training_queue.remove(client_id)
+                                    except ValueError:
+                                        pass  # 已经被移除
+                                
+                                # 从注册表中移除
+                                if client_id in self.client_registry:
+                                    del self.client_registry[client_id]
+                                
+                                # 从其他跟踪集合中移除
+                                if client_id in self.client_finished_prototypes:
+                                    del self.client_finished_prototypes[client_id]
+                                if client_id in self.client_expected_prototypes_count:
+                                    del self.client_expected_prototypes_count[client_id]
+                                if client_id in self.client_prototypes:
+                                    del self.client_prototypes[client_id]
+                                
+                                # 重置超时计数
+                                if client_id in self.client_timeout_counts:
+                                    del self.client_timeout_counts[client_id]
+                                
+                                # 添加到已处理的离线客户端集合
+                                self.offline_clients.add(client_id)
+                            else:
+                                print(f"[SERVER] 客户端 {client_id} 超时，标记为离线 ({self.client_timeout_counts[client_id]}/3)")
+                                
+                                # 更新原始记录
+                                original_info = self.client_registry.get(client_id)
+                                if original_info:
+                                    original_info["status"] = "offline"
+                                    
+                                    # 从训练队列中移除
+                                    if client_id in self.training_queue:
+                                        try:
+                                            self.training_queue.remove(client_id)
+                                        except ValueError:
+                                            pass  # 已经被移除
+                                    
+                                    # 标记为不在队列中
+                                    original_info["in_queue"] = False
+                    else:
+                        # 如果客户端响应了，重置超时计数
+                        if client_id in self.client_timeout_counts:
+                            del self.client_timeout_counts[client_id]
+                
+                # 定期清理已离线的客户端集合，避免无限增长
+                active_client_ids = set(self.client_registry.keys())
+                self.offline_clients = {cid for cid in self.offline_clients if cid in active_client_ids}
                 
                 # 等待下一个检查周期
                 await asyncio.sleep(self.status_check_interval)
