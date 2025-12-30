@@ -26,9 +26,10 @@ class FederatedControl:
         print("3. 开始训练")
         print("4. 查看已连接客户端")
         print("5. 停止服务器")
-        print("6. 停止所有客户端")
-        print("7. 查看服务器状态")
-        print("8. 退出")
+        print("6. 停止单个客户端")
+        print("7. 停止所有客户端")
+        print("8. 查看服务器状态")
+        print("9. 退出")
         print("="*50)
 
     def start_server(self):
@@ -340,6 +341,51 @@ class FederatedControl:
             self.is_server_running = False
             self.server_process = None
 
+    def stop_client(self):
+        """停止单个客户端"""
+        if not self.client_processes:
+            print("没有运行中的客户端")
+            return
+        
+        print("\n当前运行的客户端:")
+        for i, process in enumerate(self.client_processes):
+            status = "运行中" if process.poll() is None else "已停止"
+            print(f"{i+1}. 客户端进程ID: {process.pid} - {status}")
+        
+        try:
+            choice = input("\n请输入要停止的客户端编号 (输入0返回): ").strip()
+            if choice == '0':
+                return
+            
+            client_index = int(choice) - 1
+            
+            if client_index < 0 or client_index >= len(self.client_processes):
+                print("无效的客户端编号")
+                return
+            
+            process = self.client_processes[client_index]
+            
+            if process.poll() is None:  # 进程仍在运行
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                    print(f"客户端 {client_index+1} (PID: {process.pid}) 已停止")
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    print(f"客户端 {client_index+1} (PID: {process.pid}) 强制停止")
+                
+                # 从列表中移除已停止的进程
+                del self.client_processes[client_index]
+            else:
+                print(f"客户端 {client_index+1} 已经停止")
+                # 从列表中移除已停止的进程
+                del self.client_processes[client_index]
+                
+        except ValueError:
+            print("请输入有效的数字")
+        except Exception as e:
+            print(f"停止客户端时发生错误: {e}")
+
     def stop_all_clients(self):
         """停止所有客户端"""
         if not self.client_processes:
@@ -390,7 +436,7 @@ class FederatedControl:
         
         while True:
             self.display_menu()
-            choice = input("\n请选择操作 (1-8): ").strip()
+            choice = input("\n请选择操作 (1-9): ").strip()
             
             if choice == '1':
                 self.start_server()
@@ -403,10 +449,12 @@ class FederatedControl:
             elif choice == '5':
                 self.stop_server()
             elif choice == '6':
-                self.stop_all_clients()
+                self.stop_client()
             elif choice == '7':
-                self.view_server_status()
+                self.stop_all_clients()
             elif choice == '8':
+                self.view_server_status()
+            elif choice == '9':
                 print("正在退出...")
                 self.stop_all_clients()
                 if self.is_server_running:
