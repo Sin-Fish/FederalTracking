@@ -57,19 +57,17 @@ class FederatedControl:
         print(f"正在启动服务器 (原型数: {prototypes}, 端口: {port}, 主机: {host})...")
         
         try:
-            # 启动服务器进程
+            # 启动服务器进程 - 使用绝对路径
+            server_script_path = os.path.join(os.path.dirname(__file__), "..", "server", "server.py")
+            server_script_path = os.path.abspath(server_script_path)
+            
             cmd = [
                 sys.executable, 
-                "server.py", 
+                server_script_path, 
                 f"--prototypes", prototypes,
                 f"--port", port,
                 f"--host", host
             ]
-            
-            # 保存当前工作目录
-            original_dir = os.getcwd()
-            server_dir = os.path.join(os.path.dirname(__file__), "server")
-            os.chdir(server_dir)
             
             self.server_process = subprocess.Popen(
                 cmd,
@@ -77,9 +75,6 @@ class FederatedControl:
                 stderr=subprocess.PIPE,
                 text=True
             )
-            
-            # 恢复工作目录
-            os.chdir(original_dir)
             
             # 等待一段时间以确保服务器启动
             time.sleep(3)
@@ -115,6 +110,20 @@ class FederatedControl:
         """启动客户端"""
         print("启动客户端配置:")
         
+        # 获取要启动的客户端数量
+        num_clients_input = input("请输入要启动的客户端数量 (默认1): ").strip()
+        if not num_clients_input:
+            num_clients = 1
+        else:
+            try:
+                num_clients = int(num_clients_input)
+                if num_clients <= 0:
+                    print("客户端数量必须大于0，设置为默认值1")
+                    num_clients = 1
+            except ValueError:
+                print("输入的不是有效数字，设置为默认值1")
+                num_clients = 1
+        
         # 获取服务器地址
         server_url = input(f"请输入服务器地址 (默认{self.server_url}): ").strip()
         if not server_url:
@@ -125,63 +134,108 @@ class FederatedControl:
         if not data_path:
             data_path = "./data/activity_log.jsonl"
         
-        # 检查数据文件是否存在
+        # 检查数据文件是否存在，如果不存在则使用绝对路径
         if not os.path.exists(data_path):
-            print(f"警告: 数据文件 {data_path} 不存在")
-            create_sample = input("是否创建示例数据文件? (y/n): ").strip().lower()
-            if create_sample == 'y':
-                self.create_sample_data(data_path)
+            # 尝试使用绝对路径
+            abs_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "activity_log.jsonl")
+            if os.path.exists(abs_data_path):
+                data_path = abs_data_path
+            else:
+                print(f"警告: 数据文件 {data_path} 不存在")
+                create_sample = input("是否创建示例数据文件? (y/n): ").strip().lower()
+                if create_sample == 'y':
+                    # 使用绝对路径创建示例数据
+                    abs_data_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "activity_log.jsonl")
+                    self.create_sample_data(abs_data_path)
+                    data_path = abs_data_path
         
         # 获取隐私级别
         privacy_level = input("请选择隐私保护级别 (low/medium/high，默认medium): ").strip()
         if not privacy_level or privacy_level not in ['low', 'medium', 'high']:
             privacy_level = 'medium'
         
-        print(f"正在启动客户端 (服务器: {server_url}, 数据: {data_path})...")
+        print(f"正在启动 {num_clients} 个客户端 (服务器: {server_url}, 数据: {data_path})...")
         
-        try:
-            # 启动客户端进程
-            cmd = [
-                sys.executable,
-                "client.py",
-                f"--server", server_url,
-                f"--data", data_path,
-                f"--privacy", privacy_level
-            ]
-            
-            # 保存当前工作目录
-            original_dir = os.getcwd()
-            client_dir = os.path.join(os.path.dirname(__file__), "client")
-            os.chdir(client_dir)
-            
-            client_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-            
-            # 恢复工作目录
-            os.chdir(original_dir)
-            
-            self.client_processes.append(client_process)
-            print(f"客户端已启动，进程ID: {client_process.pid}")
-            
-            # 启动一个线程来监控客户端输出
-            client_thread = threading.Thread(
-                target=self.monitor_client_output,
-                args=(client_process,),
-                daemon=True
-            )
-            client_thread.start()
-            
-        except Exception as e:
-            print(f"启动客户端时发生错误: {e}")
+        # 启动客户端进程 - 使用绝对路径
+        client_script_path = os.path.join(os.path.dirname(__file__), "..", "client", "client.py")
+        client_script_path = os.path.abspath(client_script_path)
+        
+        for i in range(num_clients):
+            try:
+                cmd = [
+                    sys.executable,
+                    client_script_path,
+                    f"--server", server_url,
+                    f"--data", data_path,
+                    f"--privacy", privacy_level
+                ]
+                
+                client_process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                
+                # 立即检查进程是否仍在运行
+                poll_result = client_process.poll()
+                if poll_result is not None:
+                    # 进程已经退出，获取错误输出
+                    _, stderr_output = client_process.communicate()
+                    print(f"第{i+1}个客户端启动后立即退出，返回码: {poll_result}")
+                    if stderr_output:
+                        print(f"错误信息: {stderr_output}")
+                else:
+                    self.client_processes.append(client_process)
+                    print(f"第{i+1}个客户端已启动，进程ID: {client_process.pid}")
+                    
+                    # 启动一个线程来监控客户端输出
+                    client_thread = threading.Thread(
+                        target=self.monitor_client_output,
+                        args=(client_process,),
+                        daemon=True
+                    )
+                    client_thread.start()
+                
+                # 为了确保每个客户端有唯一ID，间隔1秒启动
+                time.sleep(1)
+                
+            except FileNotFoundError as e:
+                print(f"错误: 找不到Python解释器或client.py文件 - {e}")
+            except PermissionError as e:
+                print(f"错误: 没有权限执行文件 - {e}")
+            except Exception as e:
+                print(f"启动第{i+1}个客户端时发生错误: {e}")
 
     def monitor_client_output(self, process):
         """监控客户端输出"""
-        while process.poll() is None:
-            time.sleep(0.1)
+        try:
+            # 实时读取输出和错误流
+            while True:
+                output = process.stdout.readline()
+                if output:
+                    print(f"客户端输出: {output.strip()}")
+                
+                error = process.stderr.readline()
+                if error:
+                    print(f"客户端错误: {error.strip()}")
+                
+                # 检查进程是否结束
+                if process.poll() is not None:
+                    # 读取剩余的输出
+                    remaining_output = process.stdout.read()
+                    if remaining_output:
+                        print(f"客户端输出: {remaining_output.strip()}")
+                    
+                    remaining_error = process.stderr.read()
+                    if remaining_error:
+                        print(f"客户端错误: {remaining_error.strip()}")
+                    
+                    break
+                    
+                time.sleep(0.1)
+        except Exception as e:
+            print(f"监控客户端输出时发生错误: {e}")
 
     def create_sample_data(self, path):
         """创建示例数据文件"""

@@ -19,6 +19,7 @@ def start_server(host="0.0.0.0", port=8000, n_prototypes=5):
     
     # 启动FastAPI服务器
     import uvicorn
+    print(">>> 即将启动 uvicorn <<<", flush=True)
     uvicorn.run(
         server.app, 
         host=host, 

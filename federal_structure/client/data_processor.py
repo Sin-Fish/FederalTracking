@@ -106,9 +106,17 @@ class DataProcessor:
         
         for record in self.raw_data:
             try:
-                # 提取基本信息
-                process = record.get("environment", {}).get("process_name", "unknown")
-                window = record.get("environment", {}).get("window_title", "unknown")
+                # 检查记录是否为None
+                if record is None:
+                    print("[CLIENT] 跳过None记录")
+                    continue
+                
+                # 提取基本信息，添加对environment为None的检查
+                environment = record.get("environment", {})
+                if environment is None:
+                    environment = {}
+                process = environment.get("process_name", "unknown")
+                window = environment.get("window_title", "unknown")
                 
                 # 应用隐私过滤
                 safe_window = self.privacy_filter.filter_window_title(process, window)
@@ -118,6 +126,8 @@ class DataProcessor:
                 
                 if event_type == "key_press":
                     key_event = record.get("keyboard_event", {})
+                    if key_event is None:  # 添加对key_event为None的检查
+                        key_event = {}
                     key = key_event.get("key", "unknown")
                     # 简化特殊键名
                     if key.startswith("Key."):
@@ -126,6 +136,8 @@ class DataProcessor:
                     
                 elif event_type == "mouse_click":
                     mouse_event = record.get("mouse_event", {})
+                    if mouse_event is None:  # 添加对mouse_event为None的检查
+                        mouse_event = {}
                     button = mouse_event.get("button", "unknown")
                     # 对于鼠标点击，我们可以选择是否包含坐标
                     # 为了隐私，这里只记录点击动作，不记录具体坐标
@@ -133,6 +145,8 @@ class DataProcessor:
                     
                 elif event_type == "mouse_scroll":
                     scroll_event = record.get("scroll_event", {})
+                    if scroll_event is None:  # 添加对scroll_event为None的检查
+                        scroll_event = {}
                     direction = scroll_event.get("direction", "unknown")
                     action = f"scroll_{direction.lower()}"
                     
