@@ -29,7 +29,8 @@ class FederatedControl:
         print("6. 停止单个客户端")
         print("7. 停止所有客户端")
         print("8. 查看服务器状态")
-        print("9. 退出")
+        print("9. 查看客户端输出")
+        print("10. 退出")
         print("="*50)
 
     def start_server(self):
@@ -191,12 +192,12 @@ class FederatedControl:
                     print(f"第{i+1}个客户端已启动，进程ID: {client_process.pid}")
                     
                     # 启动一个线程来监控客户端输出
-                    client_thread = threading.Thread(
-                        target=self.monitor_client_output,
-                        args=(client_process,),
-                        daemon=True
-                    )
-                    client_thread.start()
+                    # client_thread = threading.Thread(
+                    #     target=self.monitor_client_output,
+                    #     args=(client_process,),
+                    #     daemon=True
+                    # )
+                    # client_thread.start()
                 
                 # 为了确保每个客户端有唯一ID，间隔1秒启动
                 time.sleep(1)
@@ -430,13 +431,68 @@ class FederatedControl:
         except requests.exceptions.RequestException as e:
             print(f"与服务器通信时发生错误: {e}")
 
+    def view_client_output(self):
+        """查看客户端状态"""
+        if not self.is_server_running:
+            print("服务器未运行，无法获取客户端状态")
+            return
+        
+        try:
+            response = requests.get(f"{self.server_url}/api/system/clients", timeout=10)
+            if response.status_code == 200:
+                clients = response.json()
+                if clients:
+                    print("\n客户端状态:")
+                    print("-" * 100)
+                    for client_id, info in clients.items():
+                        # 获取所有可能的字段，如果字段不存在则显示'N/A'
+                        status = info.get('status', 'N/A')
+                        last_seen = info.get('last_seen', 'N/A')
+                        sample_count = info.get('sample_count', 'N/A')
+                        progress = info.get('progress', 0.0)
+                        training_round = info.get('training_round', 0)
+                        in_queue = info.get('in_queue', 'N/A')
+                        registered_at = info.get('registered_at', 'N/A')
+                        last_heartbeat = info.get('last_heartbeat', 'N/A')
+                        data_fingerprint = info.get('data_fingerprint', 'N/A')
+                        embedding_version = info.get('embedding_version', 'N/A')
+                        high_freq_data = info.get('high_freq_data', 'N/A')
+                        data_submitted = info.get('data_submitted', 'N/A')
+                        submitted_at = info.get('submitted_at', 'N/A')
+                        readiness_confirmed = info.get('readiness_confirmed', 'N/A')
+                        readiness_confirmed_at = info.get('readiness_confirmed_at', 'N/A')
+                        
+                        print(f"客户端ID: {client_id}")
+                        print(f"  状态: {status}")
+                        print(f"  最后活动: {last_seen}")
+                        print(f"  样本数: {sample_count}")
+                        print(f"  训练进度: {progress*100:.1f}%")
+                        print(f"  训练轮次: {training_round}")
+                        print(f"  队列中: {'是' if in_queue else '否'}")
+                        print(f"  注册时间: {registered_at}")
+                        print(f"  最后心跳: {last_heartbeat}")
+                        print(f"  数据指纹: {data_fingerprint}")
+                        print(f"  嵌入版本: {embedding_version}")
+                        print(f"  高频数据: {high_freq_data}")
+                        print(f"  数据已提交: {data_submitted}")
+                        print(f"  提交时间: {submitted_at}")
+                        print(f"  就位确认: {readiness_confirmed}")
+                        print(f"  确认时间: {readiness_confirmed_at}")
+                        print("-" * 100)
+                else:
+                    print("当前没有连接的客户端")
+            else:
+                print(f"获取客户端状态失败: {response.status_code}")
+        except requests.exceptions.RequestException as e:
+            print(f"与服务器通信时发生错误: {e}")
+
     def run(self):
         """运行控制台"""
         print("欢迎使用联邦学习系统控制台")
         
         while True:
             self.display_menu()
-            choice = input("\n请选择操作 (1-9): ").strip()
+            choice = input("\n请选择操作 (1-10): ").strip()
             
             if choice == '1':
                 self.start_server()
@@ -455,6 +511,8 @@ class FederatedControl:
             elif choice == '8':
                 self.view_server_status()
             elif choice == '9':
+                self.view_client_output()
+            elif choice == '10':
                 print("正在退出...")
                 self.stop_all_clients()
                 if self.is_server_running:
