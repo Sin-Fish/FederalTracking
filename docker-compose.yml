@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # 联邦学习服务器
+  server:
+    build:
+      context: ./federal_structure/server
+      dockerfile: Dockerfile
+    container_name: federated-server
+    ports:
+      - "8000:8000"
+    networks:
+      - federated-network
+    volumes:
+      - ./data:/app/data
+    command: ["python", "server.py", "--host", "0.0.0.0", "--prototypes", "5"]
+    restart: unless-stopped
+
+  # 联邦学习客户端
+  client:
+    build:
+      context: ./federal_structure/client
+      dockerfile: Dockerfile
+    container_name: federated-client
+    depends_on:
+      - server
+    networks:
+      - federated-network
+    environment:
+      - SERVER_URL=http://server:8000
+    volumes:
+      - ./data:/app/data
+    command: ["python", "client.py", "--server", "http://server:8000"]
+    restart: unless-stopped
+
+networks:
+  federated-network:
+    driver: bridge
+
+volumes:
+  data:

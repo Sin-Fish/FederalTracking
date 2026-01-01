@@ -7,6 +7,7 @@
 import time
 import json
 import hashlib
+import platform
 from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, asdict
@@ -15,25 +16,58 @@ import threading
 import sys
 
 # ---------- 平台相关的导入 ----------
-try:
-    # 鼠标键盘监听 (跨平台)
-    from pynput import mouse, keyboard
-    from pynput.keyboard import Key, KeyCode
-    # 窗口信息获取 (Windows)
-    import win32gui
-    import win32process
-    import psutil
-    PLATFORM = "windows"
-except ImportError as e:
-    # 如果是非Windows或缺少库，使用基本监听和模拟数据
-    print(f"导入警告: {e}. 将使用基础监听模式和模拟窗口信息。")
+PLATFORM = platform.system().lower()
+
+if PLATFORM == "windows":
+    try:
+        # 鼠标键盘监听 (跨平台)
+        from pynput import mouse, keyboard
+        from pynput.keyboard import Key, KeyCode
+        # 窗口信息获取 (Windows)
+        import win32gui
+        import win32process
+        import psutil
+    except ImportError as e:
+        print(f"导入警告: {e}. 将使用基础监听模式和模拟窗口信息。")
+        try:
+            from pynput import mouse, keyboard
+            from pynput.keyboard import Key, KeyCode
+        except ImportError:
+            print("错误: 必须安装 'pynput' 库。请运行: pip install pynput")
+            sys.exit(1)
+elif PLATFORM == "linux":
+    try:
+        # 在Linux上，我们可能需要evdev或其他库
+        from pynput import mouse, keyboard
+        from pynput.keyboard import Key, KeyCode
+        import psutil
+    except ImportError:
+        print("在Linux上可能需要安装 'python3-dev libevdev-dev' 等系统依赖。")
+        # 可以尝试使用evdev
+        try:
+            import evdev
+            from pynput import mouse, keyboard
+            from pynput.keyboard import Key, KeyCode
+            import psutil
+        except ImportError:
+            print("警告: 缺少必要的库，将使用模拟数据模式。")
+            mouse = None
+            keyboard = None
+            Key = None
+            KeyCode = None
+            psutil = None
+else:  # macOS或其他
     try:
         from pynput import mouse, keyboard
         from pynput.keyboard import Key, KeyCode
+        import psutil
     except ImportError:
-        print("错误: 必须安装 'pynput' 库。请运行: pip install pynput")
-        sys.exit(1)
-    PLATFORM = "generic"
+        print("警告: 缺少必要的库，将使用模拟数据模式。")
+        mouse = None
+        keyboard = None
+        Key = None
+        KeyCode = None
+        psutil = None
 
 # ---------- 数据结构定义 (使用dataclass) ----------
 class EventType(Enum):
