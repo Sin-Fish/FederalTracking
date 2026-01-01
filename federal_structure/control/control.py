@@ -9,6 +9,24 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 
+class MockDockerProcess:
+    """模拟Docker容器进程，以便与subprocess.Popen保持一致的接口"""
+    def __init__(self, container_id: str):
+        self.container_id = container_id
+        self.pid = None  # Docker容器没有传统意义上的PID
+
+    def poll(self):
+        """检查容器是否仍在运行"""
+        result = subprocess.run(
+            ['docker', 'inspect', '--format={{.State.Running}}', self.container_id], 
+            capture_output=True, text=True
+        )
+        if result.returncode == 0 and 'true' in result.stdout:
+            return None  # 运行中
+        else:
+            return 1  # 已停止
+
+
 class FederatedControl:
     def __init__(self):
         self.server_process = None
@@ -109,8 +127,8 @@ class FederatedControl:
             time.sleep(0.1)
 
     def start_client(self):
-        """启动客户端"""
-        print("启动客户端配置:")
+        """启动客户端Docker容器"""
+        print("启动客户端Docker容器配置:")
         
         # 获取要启动的客户端数量
         num_clients_input = input("请输入要启动的客户端数量 (默认1): ").strip()
@@ -156,86 +174,114 @@ class FederatedControl:
         if not privacy_level or privacy_level not in ['low', 'medium', 'high']:
             privacy_level = 'medium'
         
-        print(f"正在启动 {num_clients} 个客户端 (服务器: {server_url}, 数据: {data_path})...")
+        print(f"正在启动 {num_clients} 个客户端Docker容器 (服务器: {server_url}, 数据: {data_path})...")
         
-        # 启动客户端进程 - 使用绝对路径
-        client_script_path = os.path.join(os.path.dirname(__file__), "..", "client", "client.py")
-        client_script_path = os.path.abspath(client_script_path)
+        # 检查Docker是否可用
+        try:
+            result = subprocess.run(['docker', '--version'], capture_output=True, text=True, timeout=10)
+            if result.returncode != 0:
+                print("错误: Docker未安装或未正确配置")
+                return
+        except FileNotFoundError:
+            print("错误: Docker命令未找到，请确保Docker已安装并添加到PATH")
+            return
         
+        # 检查镜像是否存在，如果不存在则构建
+        image_name = "federated-client:latest"
+        result = subprocess.run(['docker', 'images', '-q', image_name], capture_output=True, text=True)
+        if not result.stdout.strip():
+            print("客户端镜像不存在，正在构建...")
+            client_dir = os.path.join(os.path.dirname(__file__), "..", "client")
+            client_dir = os.path.abspath(client_dir)
+            
+            # 构建Docker镜像
+            build_result = subprocess.run([
+                'docker', 'build', '-t', image_name, client_dir
+            ], capture_output=True, text=True)
+            
+            if build_result.returncode != 0:
+                print(f"构建Docker镜像失败: {build_result.stderr}")
+                return
+            else:
+                print("Docker镜像构建成功")
+        
+        # 准备挂载数据目录
+        data_dir = os.path.dirname(os.path.abspath(data_path))
+        data_file = os.path.basename(data_path)
+        
+        # 启动客户端容器
         for i in range(num_clients):
             try:
+                container_name = f"federated-client-{int(time.time())}-{i+1}"
+                
+                # 准备Docker运行命令
                 cmd = [
-                    sys.executable,
-                    client_script_path,
-                    f"--server", server_url,
-                    f"--data", data_path,
-                    f"--privacy", privacy_level
+                    'docker', 'run', '-d',
+                    '--name', container_name,
+                    '-v', f'{data_dir}:/app/data',  # 挂载数据目录
+                    '-e', f'SERVER_URL={server_url}',
+                    '-e', f'DATA_FILE=/app/data/{data_file}',
+                    '-e', f'PRIVACY_LEVEL={privacy_level}',
+                    image_name,
+                    'python', 'client.py',
+                    '--server', server_url,
+                    '--data', f'/app/data/{data_file}',
+                    '--privacy', privacy_level
                 ]
                 
-                client_process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
+                # 执行Docker运行命令
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 
-                # 立即检查进程是否仍在运行
-                poll_result = client_process.poll()
-                if poll_result is not None:
-                    # 进程已经退出，获取错误输出
-                    _, stderr_output = client_process.communicate()
-                    print(f"第{i+1}个客户端启动后立即退出，返回码: {poll_result}")
-                    if stderr_output:
-                        print(f"错误信息: {stderr_output}")
-                else:
-                    self.client_processes.append(client_process)
-                    print(f"第{i+1}个客户端已启动，进程ID: {client_process.pid}")
+                if result.returncode == 0:
+                    container_id = result.stdout.strip()
+                    print(f"第{i+1}个客户端容器已启动，容器ID: {container_id[:12]}")
                     
-                    # 启动一个线程来监控客户端输出
-                    # client_thread = threading.Thread(
-                    #     target=self.monitor_client_output,
-                    #     args=(client_process,),
-                    #     daemon=True
-                    # )
-                    # client_thread.start()
-                
-                # 为了确保每个客户端有唯一ID，间隔1秒启动
-                time.sleep(1)
-                
-            except FileNotFoundError as e:
-                print(f"错误: 找不到Python解释器或client.py文件 - {e}")
-            except PermissionError as e:
-                print(f"错误: 没有权限执行文件 - {e}")
+                    # 记录容器ID，以便后续管理
+                    self.client_processes.append(MockDockerProcess(container_id))
+                else:
+                    print(f"启动第{i+1}个客户端容器失败: {result.stderr}")
+                    
+            except subprocess.TimeoutExpired:
+                print(f"启动第{i+1}个客户端容器超时")
             except Exception as e:
-                print(f"启动第{i+1}个客户端时发生错误: {e}")
+                print(f"启动第{i+1}个客户端容器时发生错误: {e}")
 
     def monitor_client_output(self, process):
         """监控客户端输出"""
         try:
-            # 实时读取输出和错误流
-            while True:
-                output = process.stdout.readline()
-                if output:
-                    print(f"客户端输出: {output.strip()}")
+            # 对于Docker容器，我们需要使用docker logs命令来获取输出
+            if hasattr(process, 'container_id'):
+                container_id = process.container_id
+                print(f"监控容器 {container_id[:12]} 的输出...")
                 
-                error = process.stderr.readline()
-                if error:
-                    print(f"客户端错误: {error.strip()}")
-                
-                # 检查进程是否结束
-                if process.poll() is not None:
-                    # 读取剩余的输出
-                    remaining_output = process.stdout.read()
-                    if remaining_output:
-                        print(f"客户端输出: {remaining_output.strip()}")
+                # 实时流式获取Docker日志
+                cmd = ['docker', 'logs', '-f', container_id]
+                subprocess.Popen(cmd)
+            else:
+                # 如果是普通的subprocess进程
+                while True:
+                    output = process.stdout.readline()
+                    if output:
+                        print(f"客户端输出: {output.strip()}")
                     
-                    remaining_error = process.stderr.read()
-                    if remaining_error:
-                        print(f"客户端错误: {remaining_error.strip()}")
+                    error = process.stderr.readline()
+                    if error:
+                        print(f"客户端错误: {error.strip()}")
                     
-                    break
-                    
-                time.sleep(0.1)
+                    # 检查进程是否结束
+                    if process.poll() is not None:
+                        # 读取剩余的输出
+                        remaining_output = process.stdout.read()
+                        if remaining_output:
+                            print(f"客户端输出: {remaining_output.strip()}")
+                        
+                        remaining_error = process.stderr.read()
+                        if remaining_error:
+                            print(f"客户端错误: {remaining_error.strip()}")
+                        
+                        break
+                        
+                    time.sleep(0.1)
         except Exception as e:
             print(f"监控客户端输出时发生错误: {e}")
 
@@ -343,15 +389,28 @@ class FederatedControl:
             self.server_process = None
 
     def stop_client(self):
-        """停止单个客户端"""
+        """停止Docker容器客户端"""
         if not self.client_processes:
             print("没有运行中的客户端")
             return
         
         print("\n当前运行的客户端:")
         for i, process in enumerate(self.client_processes):
-            status = "运行中" if process.poll() is None else "已停止"
-            print(f"{i+1}. 客户端进程ID: {process.pid} - {status}")
+            if hasattr(process, 'container_id'):
+                # 对于Docker容器，我们需要检查容器状态
+                container_id = process.container_id
+                result = subprocess.run(
+                    ['docker', 'inspect', '--format={{.State.Running}}', container_id], 
+                    capture_output=True, text=True
+                )
+                if result.returncode == 0 and 'true' in result.stdout:
+                    status = "运行中"
+                else:
+                    status = "已停止"
+                print(f"{i+1}. 客户端容器ID: {container_id[:12]} - {status}")
+            else:
+                status = "运行中" if process.poll() is None else "已停止"
+                print(f"{i+1}. 客户端进程ID: {process.pid} - {status}")
         
         try:
             choice = input("\n请输入要停止的客户端编号 (输入0返回): ").strip()
@@ -366,21 +425,34 @@ class FederatedControl:
             
             process = self.client_processes[client_index]
             
-            if process.poll() is None:  # 进程仍在运行
-                process.terminate()
-                try:
-                    process.wait(timeout=3)
-                    print(f"客户端 {client_index+1} (PID: {process.pid}) 已停止")
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    print(f"客户端 {client_index+1} (PID: {process.pid}) 强制停止")
+            if hasattr(process, 'container_id'):
+                # 这是Docker容器
+                container_id = process.container_id
+                result = subprocess.run(['docker', 'stop', container_id], capture_output=True, text=True)
                 
-                # 从列表中移除已停止的进程
-                del self.client_processes[client_index]
+                if result.returncode == 0:
+                    print(f"客户端容器 {container_id[:12]} 已停止")
+                    # 从列表中移除已停止的容器
+                    del self.client_processes[client_index]
+                else:
+                    print(f"停止客户端容器失败: {result.stderr}")
             else:
-                print(f"客户端 {client_index+1} 已经停止")
-                # 从列表中移除已停止的进程
-                del self.client_processes[client_index]
+                # 这是普通进程
+                if process.poll() is None:  # 进程仍在运行
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                        print(f"客户端 {client_index+1} (PID: {process.pid}) 已停止")
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        print(f"客户端 {client_index+1} (PID: {process.pid}) 强制停止")
+                    
+                    # 从列表中移除已停止的进程
+                    del self.client_processes[client_index]
+                else:
+                    print(f"客户端 {client_index+1} 已经停止")
+                    # 从列表中移除已停止的进程
+                    del self.client_processes[client_index]
                 
         except ValueError:
             print("请输入有效的数字")
@@ -388,21 +460,32 @@ class FederatedControl:
             print(f"停止客户端时发生错误: {e}")
 
     def stop_all_clients(self):
-        """停止所有客户端"""
+        """停止所有Docker容器客户端"""
         if not self.client_processes:
             print("没有运行中的客户端")
             return
         
         for i, process in enumerate(self.client_processes):
             try:
-                if process.poll() is None:  # 进程仍在运行
-                    process.terminate()
-                    try:
-                        process.wait(timeout=3)
-                        print(f"客户端 {i+1} 已停止")
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        print(f"客户端 {i+1} 强制停止")
+                if hasattr(process, 'container_id'):
+                    # 这是Docker容器
+                    container_id = process.container_id
+                    result = subprocess.run(['docker', 'stop', container_id], capture_output=True, text=True)
+                    
+                    if result.returncode == 0:
+                        print(f"客户端容器 {i+1} ({container_id[:12]}) 已停止")
+                    else:
+                        print(f"停止客户端容器失败: {result.stderr}")
+                else:
+                    # 这是普通进程
+                    if process.poll() is None:  # 进程仍在运行
+                        process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                            print(f"客户端 {i+1} 已停止")
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            print(f"客户端 {i+1} 强制停止")
             except Exception as e:
                 print(f"停止客户端 {i+1} 时发生错误: {e}")
         
