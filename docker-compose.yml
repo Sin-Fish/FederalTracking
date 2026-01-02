@@ -13,6 +13,7 @@ services:
       - federated-network
     volumes:
       - ./data:/app/data
+      - ./federal_structure/server:/app  # 添加代码卷挂载
     command: ["python", "server.py", "--host", "0.0.0.0", "--prototypes", "5"]
     restart: unless-stopped
 
@@ -30,6 +31,7 @@ services:
       - SERVER_URL=http://server:8000
     volumes:
       - ./data:/app/data
+      - ./federal_structure/client:/app  # 添加代码卷挂载
     command: ["python", "client.py", "--server", "http://server:8000"]
     restart: unless-stopped
 
