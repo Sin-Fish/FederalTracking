@@ -360,7 +360,9 @@ class NewFederatedControl:
     def check_connected_clients(self):
         """查看已连接客户端"""
         try:
-            response = requests.get(f"{self.server_url}/clients", timeout=10)
+            # 使用默认服务器地址，或从环境变量获取
+            server_address = os.getenv("SERVER_URL", "http://localhost:8000")
+            response = requests.get(f"{server_address}/api/system/clients", timeout=10)
             if response.status_code == 200:
                 clients = response.json()
                 print(f"已连接客户端数量: {len(clients)}")
@@ -374,7 +376,9 @@ class NewFederatedControl:
     def start_training(self):
         """开始训练"""
         try:
-            response = requests.post(f"{self.server_url}/start_training", timeout=10)
+            # 使用默认服务器地址，或从环境变量获取
+            server_address = os.getenv("SERVER_URL", "http://localhost:8000")
+            response = requests.post(f"{server_address}/start_training", timeout=10)
             if response.status_code == 200:
                 result = response.json()
                 print(f"训练启动结果: {result}")
