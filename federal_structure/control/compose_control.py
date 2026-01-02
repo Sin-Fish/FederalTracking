@@ -11,6 +11,9 @@ from typing import Dict, List, Optional
 
 class ComposeControl:
     def __init__(self):
+        # 修正docker-compose.yml文件路径
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))  # 从control目录向上三级
+        self.compose_file = os.path.join(project_root, "docker-compose.yml")
         self.server_url = "http://localhost:8000"  # 本地访问端口映射
 
     def display_menu(self):
@@ -51,15 +54,14 @@ class ComposeControl:
             print("错误: Docker Compose未安装或未正确配置")
             return
 
-        # 启动完整系统
-        compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-        if not os.path.exists(compose_file):
-            print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+        # 检查docker-compose.yml是否存在
+        if not os.path.exists(self.compose_file):
+            print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
         # 启动系统
         result = subprocess.run([
-            'docker-compose', '-f', compose_file, 'up', '-d', '--build'
+            'docker-compose', '-f', self.compose_file, 'up', '-d', '--build'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -88,14 +90,13 @@ class ComposeControl:
             print("错误: Docker Compose未安装或未正确配置")
             return
 
-        compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-        if not os.path.exists(compose_file):
-            print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+        if not os.path.exists(self.compose_file):
+            print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
         # 启动服务器
         result = subprocess.run([
-            'docker-compose', '-f', compose_file, 'up', '-d', '--build', 'server'
+            'docker-compose', '-f', self.compose_file, 'up', '-d', '--build', 'server'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -124,14 +125,13 @@ class ComposeControl:
             print("错误: Docker Compose未安装或未正确配置")
             return
 
-        compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-        if not os.path.exists(compose_file):
-            print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+        if not os.path.exists(self.compose_file):
+            print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
         # 启动客户端
         result = subprocess.run([
-            'docker-compose', '-f', compose_file, 'up', '-d', '--build', 'client'
+            'docker-compose', '-f', self.compose_file, 'up', '-d', '--build', 'client'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -148,14 +148,13 @@ class ComposeControl:
             else:
                 num_clients = int(num_clients_input)
                 
-            compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-            if not os.path.exists(compose_file):
-                print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+            if not os.path.exists(self.compose_file):
+                print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
                 return
             
             # 扩展客户端数量
             result = subprocess.run([
-                'docker-compose', '-f', compose_file, 'up', '-d', '--scale', f'client={num_clients}', '--build'
+                'docker-compose', '-f', self.compose_file, 'up', '-d', '--scale', f'client={num_clients}', '--build'
             ], capture_output=True, text=True)
             
             if result.returncode == 0:
@@ -212,13 +211,12 @@ class ComposeControl:
 
     def stop_all_services(self):
         """停止所有服务"""
-        compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-        if not os.path.exists(compose_file):
-            print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+        if not os.path.exists(self.compose_file):
+            print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
         result = subprocess.run([
-            'docker-compose', '-f', compose_file, 'down'
+            'docker-compose', '-f', self.compose_file, 'down'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -228,13 +226,12 @@ class ComposeControl:
 
     def stop_clients(self):
         """停止客户端"""
-        compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-        if not os.path.exists(compose_file):
-            print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+        if not os.path.exists(self.compose_file):
+            print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
         result = subprocess.run([
-            'docker-compose', '-f', compose_file, 'rm', '-f', 'client'
+            'docker-compose', '-f', self.compose_file, 'rm', '-f', 'client'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -268,15 +265,14 @@ class ComposeControl:
     def view_logs(self):
         """查看系统日志"""
         try:
-            compose_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.yml")
-            if not os.path.exists(compose_file):
-                print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
+            if not os.path.exists(self.compose_file):
+                print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
                 return
             
             print("正在显示系统日志 (按Ctrl+C退出)...")
             result = subprocess.run([
-                'docker-compose', '-f', compose_file, 'logs', '-f'
-            ])
+                'docker-compose', '-f', self.compose_file, 'logs', '-f'
+            ], capture_output=True, text=True)
         except KeyboardInterrupt:
             print("\n已退出日志查看")
 
