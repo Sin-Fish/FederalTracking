@@ -14,7 +14,14 @@ services:
     volumes:
       - ./data:/app/data
       - ./federal_structure/server:/app  # 添加代码卷挂载
-    command: ["python", "server.py", "--host", "0.0.0.0", "--prototypes", "5"]
+    environment:
+      - HOST=${SERVER_HOST:-0.0.0.0}
+      - PROTOTYPES=${PROTOTYPES:-4}
+      - PORT=${PORT:-8000}
+    command: >
+      sh -c "python server.py 
+      --host $${HOST} 
+      --prototypes $${PROTOTYPES}"
     restart: unless-stopped
 
   # 联邦学习客户端
@@ -29,11 +36,17 @@ services:
     networks:
       - federated-network
     environment:
-      - SERVER_URL=http://server:8000
+      - SERVER_URL=${SERVER_URL:-http://server:8000}
+      - PRIVACY_LEVEL=${PRIVACY_LEVEL:-medium}
+      - DATA_PATH=${DATA_PATH:-/app/data/activity_log.jsonl}
     volumes:
       - ./data:/app/data
       - ./federal_structure/client:/app  # 添加代码卷挂载
-    command: ["python", "client.py", "--server", "http://server:8000"]
+    command: >
+      sh -c "python client.py 
+      --server $${SERVER_URL} 
+      --privacy $${PRIVACY_LEVEL} 
+      --data $${DATA_PATH}"
     restart: unless-stopped
 
 networks:
