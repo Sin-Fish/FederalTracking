@@ -28,9 +28,7 @@ class NewFederatedControl:
         print("5. 停止服务器")
         print("6. 停止单个客户端")
         print("7. 停止所有客户端")
-        print("8. 查看服务器状态")
-        print("9. 查看客户端输出")
-        print("10. 退出")
+        print("8. 退出")
         print("="*50)
 
     def start_server(self):
@@ -333,11 +331,11 @@ class NewFederatedControl:
     def check_server_status(self):
         """检查服务器状态"""
         try:
-            # 检查服务器容器状态
-            result = subprocess.run(
+            esult = subprocess.run(
                 ["docker-compose", "-f", self.compose_file, "ps", "server"],
                 capture_output=True, text=True
-            )
+            )# 检查服务器容器状态
+            r
             
             if "Up" in result.stdout:
                 print("服务器正在运行")
@@ -362,7 +360,7 @@ class NewFederatedControl:
         try:
             # 使用默认服务器地址，或从环境变量获取
             server_address = os.getenv("SERVER_URL", "http://localhost:8000")
-            response = requests.get(f"{server_address}/api/system/clients", timeout=10)
+            response = requests.get(f"{server_address}/api/system/clients", timeout=60)
             if response.status_code == 200:
                 clients = response.json()
                 print(f"已连接客户端数量: {len(clients)}")
@@ -378,12 +376,31 @@ class NewFederatedControl:
         try:
             # 使用默认服务器地址，或从环境变量获取
             server_address = os.getenv("SERVER_URL", "http://localhost:8000")
-            response = requests.post(f"{server_address}/start_training", timeout=10)
+            
+            # 添加进度提示，因为训练启动可能需要较长时间
+            print("正在启动训练，请稍候...")
+            # 修正API端点和HTTP方法
+            response = requests.get(f"{server_address}/api/training/start", timeout=120)  # 使用GET方法和正确的API端点
             if response.status_code == 200:
                 result = response.json()
-                print(f"训练启动结果: {result}")
+                
+                # 更友好的输出格式
+                if result.get("status") == "training_started":
+                    print(f"✓ 训练已成功启动!")
+                    print(f"  参与客户端数量: {result.get('client_count', 0)}")
+                    training_info = result.get("training_info", {})
+                    if training_info:
+                        print(f"  模型架构: {training_info.get('model_arch', 'N/A')}")
+                        print(f"  原型数量: {len(training_info.get('prototype_labels', []))}")
+                        print(f"  客户端列表: {training_info.get('clients', [])}")
+                elif result.get("status") == "error":
+                    print(f"✗ 训练启动失败: {result.get('message', '未知错误')}")
+                else:
+                    print(f"训练启动结果: {result}")
             else:
-                print(f"启动训练失败: {response.status_code}")
+                print(f"启动训练失败: {response.status_code} - {response.text}")
+        except requests.exceptions.Timeout:
+            print("启动训练请求超时，请检查服务器状态")
         except requests.exceptions.RequestException as e:
             print(f"启动训练请求失败: {e}")
 
@@ -453,10 +470,6 @@ class NewFederatedControl:
             elif choice == "7":
                 self.stop_all_clients()
             elif choice == "8":
-                self.check_server_status()
-            elif choice == "9":
-                self.view_client_output()
-            elif choice == "10":
                 print("正在退出...")
                 break
             else:
