@@ -1,5 +1,8 @@
-# 使用官方Python基础镜像
+# 使用官方Python运行时作为基础镜像
 FROM python:3.9-slim
+
+# 设置环境变量以禁用tokenizers并行处理警告
+ENV TOKENIZERS_PARALLELISM=false
 
 # 设置工作目录
 WORKDIR /app
@@ -10,11 +13,11 @@ COPY requirements.txt /app/requirements.txt
 # 配置pip使用国内镜像源并安装依赖，跳过哈希验证
 RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/ --timeout 600 --retries 3 --trusted-host pypi.tuna.tsinghua.edu.cn
 
-# 复制服务器端的所有代码文件到容器中
+# 复制应用代码
 COPY . /app
 
-# 暴露服务器端口
+# 暴露端口
 EXPOSE 8000
 
-# 启动服务器
-CMD ["python", "server.py", "--host", "0.0.0.0"]
+# 启动服务
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]

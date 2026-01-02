@@ -1,3 +1,7 @@
+import os
+# 设置环境变量以禁用tokenizers并行处理警告
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import asyncio
 import json
 import hashlib

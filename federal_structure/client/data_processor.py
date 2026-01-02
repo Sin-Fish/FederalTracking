@@ -21,6 +21,8 @@ class DataProcessor:
         
     def load_data(self, data_path: Optional[str] = None):
         """加载数据"""
+        print(f"[CLIENT] 调试: 传入的数据路径为：{data_path}")
+        
         if not data_path or not Path(data_path).exists():
             print(f"[CLIENT] 数据文件不存在，生成模拟数据...")
             self._generate_simulated_data()

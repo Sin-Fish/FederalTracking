@@ -16,6 +16,7 @@ services:
       - ./federal_structure/server:/app  # 添加代码卷挂载
     environment:
       - PROTOTYPES=${PROTOTYPES:-5}  # 使用环境变量，默认值为5
+      - TOKENIZERS_PARALLELISM=false
     command: ["python", "server.py", "--host", "0.0.0.0", "--prototypes", "${PROTOTYPES:-5}"]
     restart: unless-stopped
 
@@ -34,6 +35,7 @@ services:
       - SERVER_URL=${SERVER_URL:-http://server:8000}
       - PRIVACY_LEVEL=${PRIVACY_LEVEL:-medium}
       - DATA_PATH=${DATA_PATH:-/app/data/activity_log.jsonl}
+      - TOKENIZERS_PARALLELISM=false
     volumes:
       - ./data:/app/data
       - ./federal_structure/client:/app  # 添加代码卷挂载
