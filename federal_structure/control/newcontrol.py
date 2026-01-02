@@ -139,8 +139,11 @@ class NewFederatedControl:
         data_path = input("请输入数据文件路径 (默认 /app/data/activity_log.jsonl): ").strip()
         if not data_path:
             data_path = "/app/data/activity_log.jsonl"
-
-        print(f"正在启动客户端 (服务器: {server_url}, 隐私级别: {privacy_level}, 数据路径: {data_path})...")
+            
+        # 为每个客户端生成唯一ID
+        client_id = f"federated-client-{int(time.time())}"
+        
+        print(f"正在创建并启动客户端容器 {client_id} (服务器: {server_url}, 隐私级别: {privacy_level}, 数据路径: {data_path})...")
 
         try:
             # 检查Docker服务是否运行
@@ -149,23 +152,58 @@ class NewFederatedControl:
                 print("错误: Docker服务未运行，请先启动Docker Desktop或Docker服务")
                 return
 
-            # 设置环境变量
-            env = os.environ.copy()
-            env["SERVER_URL"] = server_url
-            env["PRIVACY_LEVEL"] = privacy_level
-            env["DATA_PATH"] = data_path
-
-            # 启动客户端
-            up_result = subprocess.run(
-                ["docker-compose", "-f", self.compose_file, "up", "-d", "client"],
-                capture_output=True, text=True, env=env
+            # 检查服务器是否运行
+            server_check = subprocess.run(
+                ["docker-compose", "-f", self.compose_file, "ps", "server"],
+                capture_output=True, text=True
+            )
+            if "Up" not in server_check.stdout:
+                print("警告: 服务器似乎没有运行，客户端可能无法连接到服务器")
+                
+            # 检查是否存在客户端镜像
+            image_check = subprocess.run(
+                ["docker", "images", "-q", "federated-client:latest"],
+                capture_output=True, text=True
             )
             
-            if up_result.returncode == 0:
-                print("客户端容器已启动")
+            if not image_check.stdout.strip():
+                print("未找到客户端镜像，正在构建...")
+                # 构建客户端镜像
+                build_result = subprocess.run(
+                    ["docker-compose", "-f", self.compose_file, "build", "client"],
+                    capture_output=True, text=True
+                )
+                
+                if build_result.returncode != 0:
+                    print(f"构建客户端镜像失败: {build_result.stderr}")
+                    return
+                else:
+                    print("客户端镜像构建成功")
+            else:
+                print("检测到已存在的客户端镜像，直接使用...")
+                
+            # 运行客户端容器
+            cmd = [
+                "docker", "run", 
+                "-d",  # 后台运行
+                "--name", client_id,  # 使用唯一名称
+                "--network", "federaltracking_federated-network",  # 连接到联邦网络
+                "-v", f"{os.path.join(self.project_root, 'data')}:/app/data",
+                "-v", f"{os.path.join(self.project_root, 'federal_structure/client')}:/app",
+                "-e", f"SERVER_URL={server_url}",
+                "-e", f"PRIVACY_LEVEL={privacy_level}",
+                "-e", f"DATA_PATH={data_path}",
+                "--restart", "unless-stopped",
+                "federated-client:latest"  # 使用预构建镜像
+            ]
+            
+            run_result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if run_result.returncode == 0:
+                print(f"客户端容器 {client_id} 已启动")
                 return
             else:
-                print(f"创建客户端容器失败: {up_result.stderr}")
+                print(f"启动客户端容器失败: {run_result.stderr}")
                 return
                 
         except Exception as e:
@@ -204,14 +242,48 @@ class NewFederatedControl:
                 print("错误: Docker服务未运行")
                 return
 
-            # 停止客户端容器
+            # 获取所有运行中的客户端容器
+            list_result = subprocess.run(
+                ["docker", "ps", "-f", "name=federated-client-", "--format", "{{.Names}}"],
+                capture_output=True, text=True
+            )
+            
+            if not list_result.stdout.strip():
+                print("没有找到客户端容器")
+                return
+            
+            client_containers = list_result.stdout.strip().split('\n')
+            if len(client_containers) == 1 and client_containers[0] == '':
+                print("没有找到客户端容器")
+                return
+            
+            print("当前运行的客户端:")
+            for i, container in enumerate(client_containers):
+                print(f"{i+1}. {container}")
+            
+            if len(client_containers) == 1:
+                selected_container = client_containers[0]
+            else:
+                choice = input(f"请选择要停止的客户端 (1-{len(client_containers)}): ").strip()
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(client_containers):
+                        selected_container = client_containers[idx]
+                    else:
+                        print("无效选择")
+                        return
+                except ValueError:
+                    print("无效输入")
+                    return
+
+            # 停止选定的客户端容器
             result = subprocess.run(
-                ["docker-compose", "-f", self.compose_file, "stop", "client"],
+                ["docker", "stop", selected_container],
                 capture_output=True, text=True
             )
             
             if result.returncode == 0:
-                print("客户端已停止")
+                print(f"客户端 {selected_container} 已停止")
             else:
                 print(f"停止客户端失败: {result.stderr}")
                 
@@ -227,16 +299,33 @@ class NewFederatedControl:
                 print("错误: Docker服务未运行")
                 return
 
-            # 停止所有客户端容器
+            # 停止所有以 federated-client- 开头的容器
             result = subprocess.run(
-                ["docker-compose", "-f", self.compose_file, "stop", "client"],
+                ["docker", "stop", "$(docker", "ps", "-q", "-f", "name=federated-client-)"],
+                shell=True,  # 使用shell执行命令
                 capture_output=True, text=True
             )
             
-            if result.returncode == 0:
-                print("所有客户端已停止")
+            # 如果上面的命令失败，尝试使用更简单的方式
+            list_result = subprocess.run(
+                ["docker", "ps", "-f", "name=federated-client-", "-q"],
+                capture_output=True, text=True
+            )
+            
+            if list_result.stdout.strip():
+                container_ids = list_result.stdout.strip().split('\n')
+                for container_id in container_ids:
+                    if container_id:
+                        stop_result = subprocess.run(
+                            ["docker", "stop", container_id],
+                            capture_output=True, text=True
+                        )
+                        if stop_result.returncode != 0:
+                            print(f"停止客户端 {container_id} 失败: {stop_result.stderr}")
+                        else:
+                            print(f"客户端 {container_id} 已停止")
             else:
-                print(f"停止客户端失败: {result.stderr}")
+                print("没有找到客户端容器")
                 
         except Exception as e:
             print(f"停止客户端时发生错误: {e}")
@@ -297,17 +386,44 @@ class NewFederatedControl:
     def view_client_output(self):
         """查看客户端输出"""
         try:
-            # 查看客户端日志
+            # 获取所有客户端容器（包括运行中和已停止的）
             result = subprocess.run(
-                ["docker-compose", "-f", self.compose_file, "logs", "client"],
+                ["docker", "ps", "-a", "-f", "name=federated-client-", "--format", "{{.Names}}: {{.Status}}"],
                 capture_output=True, text=True
             )
             
-            if result.returncode == 0:
-                print("客户端日志:")
-                print(result.stdout[-2000:])  # 显示最后2000个字符
+            if not result.stdout.strip():
+                print("没有找到客户端容器")
+                return
+            
+            client_containers = result.stdout.strip().split('\n')
+            if len(client_containers) == 1 and client_containers[0] == '':
+                print("没有找到客户端容器")
+                return
+            
+            print("当前客户端容器 (名称: 状态):")
+            for container in client_containers:
+                print(container)
+            
+            container_name = input("请输入要查看日志的客户端容器名称: ").strip()
+            
+            # 验证输入的容器名称是否存在于客户端容器列表中
+            container_names = [name.split(':')[0] for name in client_containers]
+            if container_name not in container_names:
+                print(f"错误: 找不到名为 {container_name} 的客户端容器")
+                return
+
+            # 查看指定客户端日志
+            log_result = subprocess.run(
+                ["docker", "logs", container_name],
+                capture_output=True, text=True
+            )
+            
+            if log_result.returncode == 0:
+                print(f"客户端 {container_name} 日志:")
+                print(log_result.stdout[-2000:])  # 显示最后2000个字符
             else:
-                print(f"获取客户端日志失败: {result.stderr}")
+                print(f"获取客户端日志失败: {log_result.stderr}")
                 
         except Exception as e:
             print(f"获取客户端日志时发生错误: {e}")

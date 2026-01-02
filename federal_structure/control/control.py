@@ -52,7 +52,7 @@ class FederatedControl:
         print("="*50)
 
     def start_server(self):
-        """启动服务器容器"""
+        """启动服务器"""
         if self.is_server_running:
             print("服务器已在运行中！")
             return
@@ -75,75 +75,47 @@ class FederatedControl:
             host = "0.0.0.0"
 
         print(f"正在启动服务器 (原型数: {prototypes}, 端口: {port}, 主机: {host})...")
-
+        
         try:
-            # 确定docker-compose文件路径 - 从当前文件向上三级到项目根目录
-            compose_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "docker-compose.yml")
+            # 启动服务器进程 - 使用绝对路径
+            server_script_path = os.path.join(os.path.dirname(__file__), "..", "server", "server.py")
+            server_script_path = os.path.abspath(server_script_path)
             
-            # 检查Docker服务是否运行
-            result = subprocess.run(["docker", "info"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            if result.returncode != 0:
-                print("错误: Docker服务未运行，请先启动Docker Desktop或Docker服务")
-                return
-
-            # 检查compose文件是否存在
-            if not os.path.exists(compose_file):
-                print(f"错误: 未找到docker-compose.yml文件: {compose_file}")
-                return
-
-            # 设置环境变量
-            env = os.environ.copy()
-            env["PROTOTYPES"] = prototypes
-            env["PORT"] = port
-            env["SERVER_HOST"] = host
-
-            # 检查容器状态
-            result = subprocess.run(
-                ["docker-compose", "-f", compose_file, "ps", "server"],
-                capture_output=True, text=True, env=env
+            cmd = [
+                sys.executable, 
+                server_script_path, 
+                f"--prototypes", prototypes,
+                f"--port", port,
+                f"--host", host
+            ]
+            
+            self.server_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
             )
             
-            # 检查是否已经运行或已停止
-            if "Up" in result.stdout:
-                print("服务器容器已在运行中！")
+            # 等待一段时间以确保服务器启动
+            time.sleep(3)
+            
+            # 检查服务器是否成功启动
+            if self.server_process.poll() is None:
                 self.is_server_running = True
-                return
-            elif "Exit" in result.stdout or "Exited" in result.stdout:
-                # 容器已存在但已停止，启动现有容器
-                print("发现已停止的服务器容器，正在启动...")
-                start_result = subprocess.run(
-                    ["docker-compose", "-f", compose_file, "start", "server"],
-                    capture_output=True, text=True, env=env
+                print(f"服务器已启动，监听 {host}:{port}")
+                print(f"服务器进程ID: {self.server_process.pid}")
+                
+                # 启动一个线程来监控服务器输出
+                server_thread = threading.Thread(
+                    target=self.monitor_server_output,
+                    daemon=True
                 )
-                if start_result.returncode == 0:
-                    print("服务器容器已启动")
-                    self.is_server_running = True
-                    # 等待一段时间以确保服务器启动
-                    time.sleep(5)
-                    return
-                else:
-                    print(f"启动服务器容器失败: {start_result.stderr}")
-                    return
+                server_thread.start()
             else:
-                # 容器不存在，需要创建并启动
-                print("正在创建并启动服务器容器...")
+                print("服务器启动失败！")
+                stderr_output = self.server_process.stderr.read()
+                print(f"错误信息: {stderr_output}")
                 
-                # 启动服务器
-                up_result = subprocess.run(
-                    ["docker-compose", "-f", compose_file, "up", "-d", "server"],
-                    capture_output=True, text=True, env=env
-                )
-                
-                if up_result.returncode == 0:
-                    print("服务器容器已启动")
-                    self.is_server_running = True
-                    # 等待一段时间以确保服务器启动
-                    time.sleep(5)
-                    return
-                else:
-                    print(f"创建服务器容器失败: {up_result.stderr}")
-                    return
-                    
         except Exception as e:
             print(f"启动服务器时发生错误: {e}")
 
