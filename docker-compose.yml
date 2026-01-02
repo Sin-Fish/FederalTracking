@@ -22,7 +22,8 @@ services:
     build:
       context: ./federal_structure/client
       dockerfile: Dockerfile
-    container_name: federated-client
+    # 移除自定义容器名称以支持扩展功能
+    # container_name: federated-client
     depends_on:
       - server
     networks:

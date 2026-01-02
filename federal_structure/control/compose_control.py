@@ -29,115 +29,238 @@ class ComposeControl:
         print("6. 查看已连接客户端")
         print("7. 停止所有服务")
         print("8. 停止客户端")
-        print("9. 查看服务器状态")
-        print("10. 查看系统日志")
-        print("11. 退出")
+        print("9. 停止服务器")
+        print("10. 查看服务器状态")
+        print("11. 查看系统日志")
+        print("12. 退出")
         print("="*50)
 
-    def start_full_system(self):
-        """启动完整系统"""
+    def start_full_system_no_build(self):
+        """启动完整系统（不构建）"""
         print("正在启动完整系统 (服务器和客户端)...")
         
         try:
             # 检查Docker是否可用
+            print("检查Docker是否可用...")
             result = subprocess.run(['docker', '--version'], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 print("错误: Docker未安装或未正确配置")
                 return
+            print("Docker检查通过")
         except FileNotFoundError:
             print("错误: Docker命令未找到，请确保Docker已安装并添加到PATH")
             return
+        except subprocess.TimeoutExpired:
+            print("错误: Docker命令执行超时")
+            return
         
         # 检查Docker Compose是否可用
+        print("检查Docker Compose是否可用...")
         result = subprocess.run(['docker-compose', '--version'], capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             print("错误: Docker Compose未安装或未正确配置")
             return
+        print("Docker Compose检查通过")
 
         # 检查docker-compose.yml是否存在
+        print(f"检查docker-compose.yml文件是否存在: {self.compose_file}")
         if not os.path.exists(self.compose_file):
             print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
+        print("docker-compose.yml文件存在")
         
-        # 启动系统
-        result = subprocess.run([
-            'docker-compose', '-f', self.compose_file, 'up', '-d', '--build'
-        ], capture_output=True, text=True)
+        print("正在启动系统...")
+        print("注意：这将尝试启动现有容器，保留容器状态")
         
-        if result.returncode == 0:
-            print("系统已启动成功！")
-            print("服务器地址: http://localhost:8000")
-        else:
-            print(f"启动失败: {result.stderr}")
+        # 尝试启动现有容器，如果不存在则创建
+        try:
+            # 首先检查是否存在已停止的容器
+            ps_result = subprocess.run([
+                'docker-compose', '-f', self.compose_file, 'ps', '--status', 'exited'
+            ], capture_output=True, text=True)
+            
+            # 如果存在已停止的容器，使用start命令启动
+            if ps_result.stdout and ('server' in ps_result.stdout or 'client' in ps_result.stdout):
+                print("检测到已停止的容器，正在启动现有容器...")
+                start_result = subprocess.run([
+                    'docker-compose', '-f', self.compose_file, 'start'
+                ], capture_output=True, text=True)
+                
+                if start_result.returncode != 0:
+                    print("启动现有容器失败，尝试使用up命令...")
+                    # 如果start失败，使用up命令
+                    result = subprocess.run([
+                        'docker-compose', '-f', self.compose_file, 'up', '-d'
+                    ], capture_output=True, text=True, timeout=300)  # 5分钟超时
+                else:
+                    print("现有容器已启动成功！")
+                    result = start_result
+            else:
+                # 如果没有已停止的容器，使用up命令
+                result = subprocess.run([
+                    'docker-compose', '-f', self.compose_file, 'up', '-d'
+                ], capture_output=True, text=True, timeout=300)  # 5分钟超时
+            
+            if result.returncode == 0:
+                print("系统已启动成功！")
+                print("服务器地址: http://localhost:8000")
+                
+                # 检查容器是否正在运行
+                print("正在检查容器状态...")
+                status_result = subprocess.run([
+                    'docker-compose', '-f', self.compose_file, 'ps'
+                ], capture_output=True, text=True)
+                
+                print("容器状态:")
+                print(status_result.stdout)
+            else:
+                print(f"启动失败: {result.stderr}")
+                print("请检查错误信息并重试")
+        except subprocess.TimeoutExpired:
+            print("启动超时，请检查手动启动系统")
+            print("您也可以尝试单独启动服务器和客户端")
 
-    def start_server_only(self):
-        """仅启动服务器"""
+    def start_server_only_no_build(self):
+        """仅启动服务器（不构建）"""
         print("正在启动服务器...")
         
         try:
             # 检查Docker是否可用
+            print("检查Docker是否可用...")
             result = subprocess.run(['docker', '--version'], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 print("错误: Docker未安装或未正确配置")
                 return
+            print("Docker检查通过")
         except FileNotFoundError:
             print("错误: Docker命令未找到，请确保Docker已安装并添加到PATH")
             return
+        except subprocess.TimeoutExpired:
+            print("错误: Docker命令执行超时")
+            return
         
         # 检查Docker Compose是否可用
+        print("检查Docker Compose是否可用...")
         result = subprocess.run(['docker-compose', '--version'], capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             print("错误: Docker Compose未安装或未正确配置")
             return
+        print("Docker Compose检查通过")
 
         if not os.path.exists(self.compose_file):
             print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
-        # 启动服务器
-        result = subprocess.run([
-            'docker-compose', '-f', self.compose_file, 'up', '-d', '--build', 'server'
-        ], capture_output=True, text=True)
+        print("正在启动服务器...")
+        print("注意：这将尝试启动现有服务器容器，保留容器状态")
         
-        if result.returncode == 0:
-            print("服务器已启动成功！")
-            print("服务器地址: http://localhost:8000")
-        else:
-            print(f"启动服务器失败: {result.stderr}")
+        try:
+            # 检查服务器容器状态
+            ps_result = subprocess.run([
+                'docker-compose', '-f', self.compose_file, 'ps', 'server'
+            ], capture_output=True, text=True)
+            
+            # 检查输出中是否包含容器信息
+            if ps_result.stdout and 'server' in ps_result.stdout:
+                # 检查容器是否已停止
+                if 'Exit' in ps_result.stdout or 'Exited' in ps_result.stdout:
+                    print("检测到已停止的服务器容器，正在启动...")
+                    start_result = subprocess.run([
+                        'docker-compose', '-f', self.compose_file, 'start', 'server'
+                    ], capture_output=True, text=True)
+                    
+                    if start_result.returncode == 0:
+                        print("服务器容器已启动成功！")
+                    else:
+                        print(f"启动现有服务器容器失败: {start_result.stderr}")
+                elif 'Up' in ps_result.stdout:
+                    print("服务器已在运行中")
+                else:
+                    print("服务器容器状态未知")
+            else:
+                print("未找到服务器容器，需要先创建")
+            
+            # 检查容器是否正在运行
+            print("正在检查服务器容器状态...")
+            status_result = subprocess.run([
+                'docker-compose', '-f', self.compose_file, 'ps', 'server'
+            ], capture_output=True, text=True)
+            
+            print("服务器容器状态:")
+            print(status_result.stdout)
+        except subprocess.TimeoutExpired:
+            print("启动服务器超时，请检查手动启动服务器")
 
-    def start_client_only(self):
-        """仅启动客户端"""
+    def start_client_only_no_build(self):
+        """仅启动客户端（不构建）"""
         print("正在启动客户端...")
         
         try:
             # 检查Docker是否可用
+            print("检查Docker是否可用...")
             result = subprocess.run(['docker', '--version'], capture_output=True, text=True, timeout=10)
             if result.returncode != 0:
                 print("错误: Docker未安装或未正确配置")
                 return
+            print("Docker检查通过")
         except FileNotFoundError:
             print("错误: Docker命令未找到，请确保Docker已安装并添加到PATH")
             return
+        except subprocess.TimeoutExpired:
+            print("错误: Docker命令执行超时")
+            return
         
         # 检查Docker Compose是否可用
+        print("检查Docker Compose是否可用...")
         result = subprocess.run(['docker-compose', '--version'], capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
             print("错误: Docker Compose未安装或未正确配置")
             return
+        print("Docker Compose检查通过")
 
         if not os.path.exists(self.compose_file):
             print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
-        # 启动客户端
-        result = subprocess.run([
-            'docker-compose', '-f', self.compose_file, 'up', '-d', '--build', 'client'
-        ], capture_output=True, text=True)
+        print("正在启动客户端...")
+        print("注意：这将尝试启动现有客户端容器，保留容器状态")
         
-        if result.returncode == 0:
-            print("客户端已启动成功！")
-        else:
-            print(f"启动客户端失败: {result.stderr}")
+        try:
+            # 检查客户端容器状态
+            ps_result = subprocess.run([
+                'docker-compose', '-f', self.compose_file, 'ps', 'client'
+            ], capture_output=True, text=True)
+            
+            # 检查输出中是否包含容器信息
+            if ps_result.stdout and 'client' in ps_result.stdout:
+                # 检查容器是否已停止
+                if 'Exit' in ps_result.stdout or 'Exited' in ps_result.stdout:
+                    print("检测到已停止的客户端容器，正在启动...")
+                    start_result = subprocess.run([
+                        'docker-compose', '-f', self.compose_file, 'start', 'client'
+                    ], capture_output=True, text=True)
+                    
+                    if start_result.returncode == 0:
+                        print("客户端容器已启动成功！")
+                    else:
+                        print(f"启动现有客户端容器失败: {start_result.stderr}")
+                elif 'Up' in ps_result.stdout:
+                    print("客户端已在运行中")
+                else:
+                    print("客户端容器状态未知")
+            else:
+                print("未找到客户端容器，需要先创建")
+            
+            # 检查容器是否正在运行
+            print("正在检查客户端容器状态...")
+            status_result = subprocess.run([
+                'docker-compose', '-f', self.compose_file, 'ps', 'client'
+            ], capture_output=True, text=True)
+            
+            print("客户端容器状态:")
+            print(status_result.stdout)
+        except subprocess.TimeoutExpired:
+            print("启动客户端超时，请检查手动启动客户端")
 
     def scale_clients(self):
         """扩展客户端数量"""
@@ -152,13 +275,24 @@ class ComposeControl:
                 print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
                 return
             
+            print(f"正在将客户端扩展到 {num_clients} 个...")
+            print("注意：这将保留现有的客户端容器，并根据需要创建或停止容器以达到指定数量")
+            
             # 扩展客户端数量
             result = subprocess.run([
-                'docker-compose', '-f', self.compose_file, 'up', '-d', '--scale', f'client={num_clients}', '--build'
+                'docker-compose', '-f', self.compose_file, 'up', '-d', '--scale', f'client={num_clients}'
             ], capture_output=True, text=True)
             
             if result.returncode == 0:
                 print(f"客户端已扩展到 {num_clients} 个")
+                
+                # 显示当前容器状态
+                status_result = subprocess.run([
+                    'docker-compose', '-f', self.compose_file, 'ps'
+                ], capture_output=True, text=True)
+                
+                print("当前容器状态:")
+                print(status_result.stdout)
             else:
                 print(f"扩展客户端失败: {result.stderr}")
         except ValueError:
@@ -171,6 +305,7 @@ class ComposeControl:
             return
         
         try:
+            print("正在开始训练...")
             response = requests.get(f"{self.server_url}/api/training/start", timeout=10)
             if response.status_code == 200:
                 result = response.json()
@@ -187,6 +322,7 @@ class ComposeControl:
             return
         
         try:
+            print("正在获取客户端列表...")
             response = requests.get(f"{self.server_url}/api/system/clients", timeout=10)
             if response.status_code == 200:
                 clients = response.json()
@@ -215,8 +351,10 @@ class ComposeControl:
             print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
+        print("正在停止所有服务...")
+        # 使用stop命令而不是down命令，stop只是停止容器，不删除
         result = subprocess.run([
-            'docker-compose', '-f', self.compose_file, 'down'
+            'docker-compose', '-f', self.compose_file, 'stop'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
@@ -230,14 +368,33 @@ class ComposeControl:
             print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
             return
         
+        print("正在停止客户端...")
+        # 使用stop命令而不是rm命令，stop只是停止容器，不删除
         result = subprocess.run([
-            'docker-compose', '-f', self.compose_file, 'rm', '-f', 'client'
+            'docker-compose', '-f', self.compose_file, 'stop', 'client'
         ], capture_output=True, text=True)
         
         if result.returncode == 0:
             print("客户端已停止")
         else:
             print(f"停止客户端失败: {result.stderr}")
+
+    def stop_server(self):
+        """停止服务器"""
+        if not os.path.exists(self.compose_file):
+            print(f"错误: 未找到docker-compose.yml文件: {self.compose_file}")
+            return
+        
+        print("正在停止服务器...")
+        # 使用stop命令而不是rm命令，stop只是停止容器，不删除
+        result = subprocess.run([
+            'docker-compose', '-f', self.compose_file, 'stop', 'server'
+        ], capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("服务器已停止")
+        else:
+            print(f"停止服务器失败: {result.stderr}")
 
     def view_server_status(self):
         """查看服务器状态"""
@@ -290,14 +447,14 @@ class ComposeControl:
         
         while True:
             self.display_menu()
-            choice = input("\n请选择操作 (1-11): ").strip()
+            choice = input("\n请选择操作 (1-12): ").strip()
             
             if choice == '1':
-                self.start_full_system()
+                self.start_full_system_no_build()
             elif choice == '2':
-                self.start_server_only()
+                self.start_server_only_no_build()
             elif choice == '3':
-                self.start_client_only()
+                self.start_client_only_no_build()
             elif choice == '4':
                 self.scale_clients()
             elif choice == '5':
@@ -309,10 +466,12 @@ class ComposeControl:
             elif choice == '8':
                 self.stop_clients()
             elif choice == '9':
-                self.view_server_status()
+                self.stop_server()
             elif choice == '10':
-                self.view_logs()
+                self.view_server_status()
             elif choice == '11':
+                self.view_logs()
+            elif choice == '12':
                 print("正在退出...")
                 break
             else:
