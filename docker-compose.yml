@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # 联邦学习服务器
+  server:
+    build:
+      context: ./federal_structure/server
+      dockerfile: Dockerfile
+    container_name: federated-server
+    ports:
+      - "8000:8000"
+    networks:
+      - federated-network
+    volumes:
+      - ./data:/app/data
+      - ./federal_structure/server:/app  # 添加代码卷挂载
+    environment:
+      - PROTOTYPES=${PROTOTYPES:-5}  # 使用环境变量，默认值为5
+      - TOKENIZERS_PARALLELISM=false
+    command: ["python", "server.py", "--host", "0.0.0.0", "--prototypes", "${PROTOTYPES:-5}"]
+    restart: unless-stopped
+
+  # 联邦学习客户端
+  client:
+    build:
+      context: ./federal_structure/client
+      dockerfile: Dockerfile
+    # 移除自定义容器名称以支持扩展功能
+    # container_name: federated-client
+    depends_on:
+      - server
+    networks:
+      - federated-network
+    environment:
+      - SERVER_URL=${SERVER_URL:-http://server:8000}
+      - PRIVACY_LEVEL=${PRIVACY_LEVEL:-medium}
+      - DATA_PATH=${DATA_PATH:-/app/data/activity_log.jsonl}
+      - TOKENIZERS_PARALLELISM=false
+    volumes:
+      - ./data:/app/data
+      - ./federal_structure/client:/app  # 添加代码卷挂载
+    command: >
+      sh -c "python client.py 
+      --server ${SERVER_URL:-http://server:8000} 
+      --privacy ${PRIVACY_LEVEL:-medium} 
+      --data ${DATA_PATH:-/app/data/activity_log.jsonl}"
+    restart: unless-stopped
+
+networks:
+  federated-network:
+    driver: bridge
+
+volumes:
+  data:

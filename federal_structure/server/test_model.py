@@ -6,6 +6,10 @@ import torch
 from datetime import datetime
 from typing import Dict, List, Tuple
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+
+# 设置环境变量以禁用tokenizers并行处理警告
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from sentence_transformers import SentenceTransformer
 import warnings
 warnings.filterwarnings('ignore')
@@ -95,6 +99,29 @@ class ModelTester:
         
         print(f"[TEST] 生成 {len(behavior_strings)} 个行为字符串")
         return behavior_strings
+
+    def test_embeddings(self):
+        """测试嵌入功能"""
+        print("[TEST] 测试嵌入功能...")
+        
+        # 初始化模型
+        self.initialize_embedding_model()
+        
+        # 处理数据
+        behavior_strings = self.process_raw_data()
+        
+        if not behavior_strings:
+            print("[TEST] 没有有效的行为字符串用于测试")
+            return
+        
+        # 生成嵌入
+        print(f"[TEST] 生成 {len(behavior_strings)} 个行为字符串的嵌入...")
+        embeddings = self.embedding_model.encode(behavior_strings, show_progress_bar=True)
+        
+        print(f"[TEST] 嵌入形状: {embeddings.shape}")
+        print(f"[TEST] 嵌入功能测试完成")
+        
+        return embeddings
 
     def embed_behavior_strings(self, behavior_strings: List[str]):
         """将行为字符串转换为嵌入向量"""

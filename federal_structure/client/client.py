@@ -3,6 +3,7 @@ import json
 import hashlib
 import time
 import sys
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
@@ -24,10 +25,14 @@ class FederatedClient:
     """联邦学习客户端"""
     
     def __init__(self, 
-                 server_url: str = "http://localhost:8000",
+                 server_url: str = None,  # 从环境变量或参数获取，而不是默认值
                  client_id: Optional[str] = None,
                  data_path: Optional[str] = None,
                  privacy_level: str = "medium"):
+        
+        # 如果没有提供server_url，则从环境变量获取，否则使用默认值
+        if server_url is None:
+            server_url = os.getenv("SERVER_URL", "http://host.docker.internal:8000")
         
         self.server_url = server_url.rstrip("/")
         self.client_id = client_id or self._generate_client_id()
@@ -201,7 +206,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="联邦学习客户端")
-    parser.add_argument("--server", default="http://localhost:8000", help="服务器地址")
+    parser.add_argument("--server", default=os.getenv("SERVER_URL", "http://host.docker.internal:8000"), help="服务器地址")
     parser.add_argument("--client-id", help="客户端ID（默认自动生成）")
     parser.add_argument("--data", help="数据文件路径（JSON或JSONL格式）")
     parser.add_argument("--privacy", choices=["low", "medium", "high"], default="medium", 
