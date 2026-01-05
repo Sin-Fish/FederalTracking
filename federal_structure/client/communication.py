@@ -44,17 +44,78 @@ class CommunicationModule:
         # 服务器模型哈希
         self.server_model_hash = None  # 添加这个属性的初始化
     
-    def check_local_model(self, server_model_hash: str) -> bool:
-        """检查本地是否已有指定哈希的模型"""
-        hash_file_path = f"{self.model_cache_path}/{self.model_name}_hash.txt"
-        if not os.path.exists(hash_file_path):
-            return False
+    def get_embedding_model(self):
+        """获取嵌入模型，如果本地没有则从服务器下载"""
+        from sentence_transformers import SentenceTransformer
+        
+        # 首先尝试从服务器获取模型信息
+        try:
+            response = requests.get(
+                f"{self.server_url}/api/system/model_info",
+                timeout=self.request_timeout
+            )
             
+            if response.status_code == 200:
+                model_info = response.json()
+                model_hash = model_info.get('model_hash', '')
+                
+                # 检查本地是否有匹配的模型
+                if self.check_local_model(model_hash):
+                    print("[CLIENT] 本地已存在匹配的模型，准备加载...")
+                    
+                    # 检查是否存在嵌套目录结构
+                    model_path = f"{self.model_cache_path}/{self.model_name}"
+                    nested_path = f"{model_path}/{self.model_name}"
+                    if os.path.exists(nested_path):
+                        print(f"[CLIENT] 检测到嵌套模型目录结构，使用路径: {nested_path}")
+                        model_path = nested_path
+                    
+                    print(f"[CLIENT] 从本地缓存加载模型: {model_path}")
+                    return SentenceTransformer(model_path)
+                else:
+                    print(f"[CLIENT] 本地无匹配模型，从服务器下载 (Hash: {model_hash[:16]}...)")
+                    
+                    # 从服务器下载模型
+                    if self._download_model_from_server(self.model_name):
+                        # 下载成功，加载模型
+                        model_path = f"{self.model_cache_path}/{self.model_name}"
+                        nested_path = f"{model_path}/{self.model_name}"
+                        if os.path.exists(nested_path):
+                            print(f"[CLIENT] 检测到嵌套模型目录结构，使用路径: {nested_path}")
+                            model_path = nested_path
+                        
+                        print(f"[CLIENT] 从本地缓存加载模型: {model_path}")
+                        return SentenceTransformer(model_path)
+                    else:
+                        print("[CLIENT] 从服务器下载模型失败，使用随机嵌入作为备用方案")
+                        return None
+            else:
+                print(f"[CLIENT] 获取模型信息失败: {response.status_code}")
+                print("[CLIENT] 使用随机嵌入作为备用方案")
+                return None
+        except Exception as e:
+            print(f"[CLIENT] 获取嵌入模型时发生错误: {e}")
+            print("[CLIENT] 使用随机嵌入作为备用方案")
+            return None
+
+    def check_local_model(self, server_model_hash: str) -> bool:
+        """检查本地模型是否与服务器模型匹配"""
+        hash_file_path = f"{self.model_cache_path}/{self.model_name}_hash.txt"
+        
+        if not os.path.exists(hash_file_path):
+            print("[CLIENT] 本地模型哈希文件不存在")
+            return False
+        
         try:
             with open(hash_file_path, 'r') as f:
-                cached_hash = f.read().strip()
-                return cached_hash == server_model_hash
-        except Exception:
+                local_hash = f.read().strip()
+            
+            print(f"[CLIENT] 本地模型哈希: {local_hash[:16] if local_hash else 'None'}")
+            print(f"[CLIENT] 服务器模型哈希: {server_model_hash[:16] if server_model_hash else 'None'}")
+            
+            return local_hash == server_model_hash
+        except Exception as e:
+            print(f"[CLIENT] 检查本地模型哈希时出错: {e}")
             return False
     
     def _download_model_from_server(self, model_name: str) -> bool:

@@ -24,6 +24,28 @@ class DataProcessor:
         self.action_prototypes: np.ndarray = None  # 动作聚类中心
         self.browser_processes = ['chrome.exe', 'firefox.exe', 'msedge.exe', 'opera.exe', 'safari.exe']  # 浏览器进程列表
 
+    def get_unique_process_count(self) -> int:
+        """获取数据中唯一进程的数量"""
+        if not self.raw_data:
+            self.process_raw_data()
+            
+        processes = set()
+        for record in self.raw_data:
+            try:
+                environment = record.get("environment", {})
+                if environment is None:
+                    environment = {}
+                process = environment.get("process_name", "unknown").lower()
+                # 只保留进程名，去掉扩展名
+                process_name = process.replace('.exe', '').replace('.EXE', '')
+                processes.add(process_name)
+            except Exception as e:
+                print(f"[CLIENT] 提取进程名时出错: {e}")
+                continue
+
+        # 返回唯一进程数量
+        return len(processes)
+
     def load_data(self, data_path: Optional[str] = None):
         """加载数据"""
         print(f"[CLIENT] 调试: 传入的数据路径为：{data_path}")
@@ -251,7 +273,15 @@ class DataProcessor:
         
         if embedding_model is None:
             print("[CLIENT] 错误：未提供嵌入模型，无法执行聚类")
-            return None, None
+            print("[CLIENT] 使用随机嵌入向量作为备用方案...")
+            
+            # 为状态路径生成随机嵌入
+            print(f"[CLIENT] 生成 {len(state_paths)} 个状态路径的随机嵌入...")
+            state_embeddings = np.random.rand(len(state_paths), 384).astype(np.float32)
+            
+            # 为动作路径生成随机嵌入
+            print(f"[CLIENT] 生成 {len(action_paths)} 个动作路径的随机嵌入...")
+            action_embeddings = np.random.rand(len(action_paths), 384).astype(np.float32)
         else:
             print(f"[CLIENT] 嵌入 {len(state_paths)} 个状态路径...")
             state_embeddings = embedding_model.encode(state_paths, show_progress_bar=False)
@@ -285,6 +315,7 @@ class DataProcessor:
             self.action_prototypes = np.random.rand(n_action_prototypes, 384).astype(np.float32)
 
         print(f"[CLIENT] 本地双路聚类完成！状态原型形状: {self.state_prototypes.shape}, 动作原型形状: {self.action_prototypes.shape}")
+        
         return self.state_prototypes, self.action_prototypes
 
     def get_local_prototypes(self) -> Tuple[List[List[float]], List[List[float]]]:
