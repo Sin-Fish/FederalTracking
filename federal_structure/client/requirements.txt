@@ -9,3 +9,6 @@ pydantic==2.8.2
 typing-extensions==4.7.1
 requests==2.31.0
 Pillow==10.0.0
+
+transformers>=4.57.2,<5.0.0 \
+    --hash=sha256:190e02e66db8fdad6f3bd9b24a9c83f91fa8ef8db891a8674e95dfbca028e66a
