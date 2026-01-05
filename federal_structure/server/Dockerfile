@@ -11,7 +11,7 @@ WORKDIR /app
 COPY requirements.txt /app/requirements.txt
 
 # 配置pip使用国内镜像源并安装依赖，跳过哈希验证
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/ --timeout 600 --retries 3 --trusted-host pypi.tuna.tsinghua.edu.cn
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 复制应用代码
 COPY . /app

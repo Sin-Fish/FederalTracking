@@ -73,7 +73,7 @@ class FederatedServerCore:
         model_name = "all-MiniLM-L6-v2"
         model_dir = f"./models/{model_name}"
         
-        print(f"[SERVER] 初始化嵌入模型111...")
+        print(f"[SERVER] 初始化嵌入模型...")
         
         # 检查是否可以导入SentenceTransformer
         try:

@@ -28,7 +28,9 @@ class FederatedClient:
                  server_url: str = None,  # 从环境变量或参数获取，而不是默认值
                  client_id: Optional[str] = None,
                  data_path: Optional[str] = None,
-                 privacy_level: str = "medium"):
+                 privacy_level: str = "medium",
+                 n_state_prototypes: int = 5,
+                 n_action_prototypes: int = 10):
         
         # 如果没有提供server_url，则从环境变量获取，否则使用默认值
         if server_url is None:
@@ -38,6 +40,10 @@ class FederatedClient:
         self.client_id = client_id or self._generate_client_id()
         self.data_path = Path(data_path) if data_path else None
         self.privacy_level = privacy_level
+        
+        # 聚类参数
+        self.n_state_prototypes = n_state_prototypes
+        self.n_action_prototypes = n_action_prototypes
         
         # 初始化组件
         self.data_processor = DataProcessor(privacy_level)
@@ -61,6 +67,8 @@ class FederatedClient:
         ║ 客户端ID: {self.client_id:<25} ║
         ║ 服务器: {self.server_url:<25} ║
         ║ 隐私级别: {privacy_level:<25} ║
+        ║ 状态原型数: {self.n_state_prototypes:<23} ║
+        ║ 动作原型数: {self.n_action_prototypes:<23} ║
         ╚══════════════════════════════════════╝
         """)
     
@@ -85,6 +93,37 @@ class FederatedClient:
     def get_high_frequency_actions(self, top_k: int = 50) -> List[str]:
         """获取最高频的行为字符串"""
         return self.data_processor.get_high_frequency_actions(top_k)
+    
+    def perform_local_clustering(self):
+        """执行本地分层聚类"""
+        print("[CLIENT] 开始执行本地分层聚类...")
+        
+        # 提取状态路径和动作路径
+        state_paths, action_paths = self.data_processor.extract_state_action_paths()
+        
+        # 确保在执行聚类前已从服务器获取嵌入模型
+        if self.embedding_model is None:
+            print("[CLIENT] 嵌入模型尚未加载，尝试从通信模块获取...")
+            # 如果模型未加载，尝试从通信模块获取
+            if self.communication.embedding_model is not None:
+                self.embedding_model = self.communication.embedding_model
+            else:
+                print("[CLIENT] 错误：嵌入模型未加载，请先完成服务器注册")
+                return None, None
+        
+        # 执行本地双路聚类
+        state_prototypes, action_prototypes = self.data_processor.perform_local_clustering(
+            state_paths, 
+            action_paths, 
+            n_state_prototypes=self.n_state_prototypes,
+            n_action_prototypes=self.n_action_prototypes,
+            embedding_model=self.embedding_model
+        )
+        
+        print(f"[CLIENT] 本地聚类完成！")
+        print(f"[CLIENT] 状态原型数量: {len(state_prototypes)}, 动作原型数量: {len(action_prototypes)}")
+        
+        return state_prototypes, action_prototypes
     
     # ==================== 联邦通信接口 ====================
     def register_to_server(self) -> bool:
@@ -135,15 +174,24 @@ class FederatedClient:
         # 4. 启动心跳
         self.start_heartbeat()
         
-        # 5. 使用嵌入模型生成聚类中心并发送给服务器
-        print("[CLIENT] 生成本地聚类中心并发送到服务器...")
+        # 5. 执行本地分层聚类 - 这必须在报到成功后进行，以确保嵌入模型已加载
+        print("[CLIENT] 执行本地分层聚类...")
+        state_prototypes, action_prototypes = self.perform_local_clustering()
+        
+        # 检查聚类是否成功
+        if state_prototypes is None or action_prototypes is None:
+            print("[CLIENT] 本地聚类失败，退出流程")
+            return
+        
+        # 6. 发送本地聚类中心到服务器
+        print("[CLIENT] 发送本地聚类中心到服务器...")
         if not self.communication.send_local_prototypes():
             print("[CLIENT] 发送本地聚类中心失败，退出流程")
             return
         
-        print("[CLIENT] 本地聚类中心发送完成")
+        print(f"[CLIENT] 成功发送本地聚类中心到服务器")
         
-        # 6. 等待服务器发起就位检查
+        # 7. 等待服务器发起就位检查
         print("[CLIENT] 等待服务器发起就位检查...")
         readiness_response = self.communication.check_readiness()
         if not readiness_response:
@@ -152,14 +200,14 @@ class FederatedClient:
         
         print("[CLIENT] 就位检查完成")
         
-        # 7. 等待训练开始信号（在此之前服务器会完成原型生成）
+        # 8. 等待训练开始信号（在此之前服务器会完成原型生成）
         print("[CLIENT] 等待服务器训练开始指令...")
         training_info = self.communication.wait_for_training_start()
         if not training_info:
             print("[CLIENT] 未收到训练开始指令，退出流程")
             return
         
-        # 8. 如果服务器返回了原型信息，使用这些原型并创建映射
+        # 9. 如果服务器返回了原型信息，使用这些原型并创建映射
         if "training_info" in training_info and training_info["training_info"]:
             training_info_data = training_info["training_info"]
             if training_info_data.get("prototypes"):
@@ -178,7 +226,7 @@ class FederatedClient:
                 print("[CLIENT] 获取原型失败，退出流程")
                 return
         
-        # 9. 开始本地训练
+        # 10. 开始本地训练
         print("[CLIENT] 开始本地训练...")
         # 更新状态为训练中
         self.communication.send_status_update("training", 0.0)
@@ -189,7 +237,7 @@ class FederatedClient:
         # 保存训练好的模型到训练模块
         self.training.local_models = local_models
         
-        # 10. 提交模型更新
+        # 11. 提交模型更新
         self.submit_model_updates()
         
         # 训练和模型上传完成后更新状态为完成
@@ -206,22 +254,34 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="联邦学习客户端")
-    parser.add_argument("--server", default=os.getenv("SERVER_URL", "http://host.docker.internal:8000"), help="服务器地址")
-    parser.add_argument("--client-id", help="客户端ID（默认自动生成）")
-    parser.add_argument("--data", help="数据文件路径（JSON或JSONL格式）")
-    parser.add_argument("--privacy", choices=["low", "medium", "high"], default="medium", 
-                       help="隐私保护级别")
+    parser.add_argument("--server", dest="server_url", type=str, default=None,
+                       help="服务器URL，默认从环境变量获取")
+    parser.add_argument("--client-id", dest="client_id", type=str, default=None,
+                       help="客户端ID，如果不提供则自动生成")
+    parser.add_argument("--data", dest="data_path", type=str, default=None,
+                       help="数据文件路径（JSON或JSONL格式）")
+    parser.add_argument("--privacy", dest="privacy_level", type=str, default="medium",
+                       choices=["low", "medium", "high"], help="隐私保护级别")
     parser.add_argument("--simulate", action="store_true", help="使用模拟数据")
     parser.add_argument("--register-only", action="store_true", help="仅注册不训练")
+    parser.add_argument("--n-state-prototypes", type=int, default=5,
+                       help="状态原型数量")
+    parser.add_argument("--n-action-prototypes", type=int, default=10,
+                       help="动作原型数量")
     
     args = parser.parse_args()
     
     # 创建客户端实例
+    # 构建 server_url：优先使用参数，其次环境变量，最后默认值
+    server_url = args.server_url or os.getenv("SERVER_URL", "http://host.docker.internal:8000")
+    
     client = FederatedClient(
-        server_url=args.server,
+        server_url=server_url,
         client_id=args.client_id,
-        data_path=args.data,
-        privacy_level=args.privacy
+        data_path=args.data_path,
+        privacy_level=args.privacy_level,
+        n_state_prototypes=args.n_state_prototypes,
+        n_action_prototypes=args.n_action_prototypes
     )
     
     # 使用模拟数据（如果指定）
@@ -231,7 +291,7 @@ def main():
     # 运行流程
     if args.register_only:
         # 仅注册
-        client.load_data(args.data)
+        client.load_data(args.data_path)
         client.process_raw_data()
         client.register_to_server()
         client.start_heartbeat()
@@ -246,7 +306,7 @@ def main():
             print("\n[CLIENT] 客户端停止")
     else:
         # 完整流程
-        client.run_full_pipeline(args.data)
+        client.run_full_pipeline(args.data_path)
 
 
 if __name__ == "__main__":

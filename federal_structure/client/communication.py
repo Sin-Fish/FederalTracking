@@ -40,6 +40,9 @@ class CommunicationModule:
         # 本地模型缓存路径
         self.model_cache_path = "./model_cache"
         self.model_name = "all-MiniLM-L6-v2"
+        
+        # 服务器模型哈希
+        self.server_model_hash = None  # 添加这个属性的初始化
     
     def check_local_model(self, server_model_hash: str) -> bool:
         """检查本地是否已有指定哈希的模型"""
@@ -200,21 +203,24 @@ class CommunicationModule:
                 data = response.json()
                 print(f"[CLIENT] 报到成功: {data}")
                 
-                # 检查服务器返回的模型哈希
-                self.server_model_hash = data.get("model_hash")
-                self.n_prototypes = data.get("n_prototypes", 5)
-                
-                # 加载嵌入模型
-                self.load_embedding_model(self.server_model_hash)
+                # 如果服务器返回了模型哈希，加载嵌入模型
+                if "model_hash" in data:
+                    server_model_hash = data["model_hash"]
+                    try:
+                        self.load_embedding_model(server_model_hash)
+                        # 将加载的模型引用也赋给data_processor，以便在聚类中使用
+                        self.data_processor.embedding_model = self.embedding_model
+                    except Exception as e:
+                        print(f"[CLIENT] 加载嵌入模型失败: {e}")
+                        return False
                 
                 self.is_registered = True
                 return True
             else:
                 print(f"[CLIENT] 报到失败: {response.status_code} - {response.text}")
                 return False
-                
         except Exception as e:
-            print(f"[CLIENT] 报到时发生错误: {e}")
+            print(f"[CLIENT] 报到异常: {e}")
             return False
     
     def submit_high_freq_data(self, top_k: int = 50) -> bool:
@@ -339,6 +345,39 @@ class CommunicationModule:
         except Exception as e:
             print(f"[CLIENT] 状态更新失败: {e}")
             return False
+
+    def send_local_prototypes(self) -> bool:
+        """发送本地聚类中心到服务器"""
+        print("[CLIENT] 发送本地聚类中心到服务器...")
+        
+        # 获取本地聚类中心
+        state_prototypes_list, action_prototypes_list = self.data_processor.get_local_prototypes()
+        
+        # 合并状态和动作原型
+        all_local_prototypes = state_prototypes_list + action_prototypes_list
+        
+        if not all_local_prototypes:
+            print("[CLIENT] 没有本地聚类中心可以发送")
+            return False
+        
+        try:
+            # 发送原型数据 - 直接发送列表而不是字典
+            response = requests.post(
+                f"{self.server_url}/api/client/prototypes?client_id={self.client_id}",
+                json=all_local_prototypes,  # 直接发送原型列表
+                timeout=60  # 增加超时时间
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                print(f"[CLIENT] 聚类中心发送成功: {data}")
+                return True
+            else:
+                print(f"[CLIENT] 聚类中心发送失败: {response.status_code} - {response.text}")
+                return False
+        except Exception as e:
+            print(f"[CLIENT] 发送聚类中心异常: {e}")
+            return False
     
     def check_readiness(self):
         """检查客户端就位状态"""
@@ -369,7 +408,9 @@ class CommunicationModule:
                     server_model_hash = data.get('model_hash')
                     if server_model_hash and self.server_model_hash != server_model_hash:
                         print(f"[CLIENT] 模型哈希不匹配，下载新模型...")
-                        self.download_model_from_server()
+                        # 更新本地服务器模型哈希
+                        self.server_model_hash = server_model_hash
+                        self.load_embedding_model(server_model_hash)
                     
                     return True
                 else:
@@ -382,7 +423,7 @@ class CommunicationModule:
         except Exception as e:
             print(f"[CLIENT] 等待就位检查时发生错误: {e}")
             return False
-    
+
     def wait_for_training_start(self):
         """等待服务器训练开始指令"""
         print("[CLIENT] 等待服务器训练开始指令...")
@@ -529,57 +570,3 @@ class CommunicationModule:
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
         print(f"[CLIENT] 心跳线程已启动，间隔: {interval}秒")
-    
-    def cluster_local_data(self):
-        """对本地数据进行聚类"""
-        # 确保嵌入模型已加载
-        if self.embedding_model is None:
-            print("[CLIENT] 加载嵌入模型用于本地聚类...")
-            self.load_embedding_model()
-        
-        # 使用本地行为字符串进行聚类
-        behavior_strings = self.data_processor.behavior_strings
-        if len(behavior_strings) == 0:
-            print("[CLIENT] 错误：没有可用的行为数据进行聚类")
-            return None
-        
-        # 生成嵌入向量
-        print(f"[CLIENT] 为 {len(behavior_strings)} 个行为字符串生成嵌入向量...")
-        embeddings = self.embedding_model.encode(behavior_strings)
-        
-        # 使用K-Means聚类
-        from sklearn.cluster import KMeans
-        n_clusters = min(len(behavior_strings), self.n_prototypes or 2)  # 使用服务器指定的原型数量
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-        cluster_labels = kmeans.fit_predict(embeddings)
-        
-        # 获取聚类中心
-        cluster_centers = kmeans.cluster_centers_
-        
-        print(f"[CLIENT] 本地数据聚类完成，生成 {n_clusters} 个聚类中心")
-        return cluster_centers.tolist()
-
-    def send_local_prototypes(self):
-        """发送本地聚类中心到服务器"""
-        try:
-            print(f"[CLIENT] 开始对本地数据进行聚类...")
-            local_prototypes = self.cluster_local_data()
-            
-            if local_prototypes is None:
-                print("[CLIENT] 本地聚类失败，无法发送聚类中心")
-                return False
-            
-            # 发送聚类中心到服务器
-            url = f"{self.server_url}/api/client/prototypes?client_id={self.client_id}"
-            response = requests.post(url, json=local_prototypes, timeout=30)
-            
-            if response.status_code == 200:
-                result = response.json()
-                print(f"[CLIENT] 聚类中心发送成功: {result}")
-                return True
-            else:
-                print(f"[CLIENT] 聚类中心发送失败: {response.status_code}, {response.text}")
-                return False
-        except Exception as e:
-            print(f"[CLIENT] 发送聚类中心时发生错误: {e}")
-            return False
