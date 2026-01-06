@@ -44,6 +44,15 @@ class FederatedServerAPI:
                 "prototypes_ready": self.core.global_prototypes is not None
             }
         
+        @self.app.get("/api/system/config")
+        async def get_system_config():
+            """获取系统配置，包括原型数等参数"""
+            return {
+                "n_prototypes": self.core.n_prototypes,
+                "embedding_model_hash": self.core.embedding_model_hash,
+                "embedding_dim": self.core.embedding_dim
+            }
+        
         @self.app.post("/api/client/register")
         async def client_register(req: ClientRegister):
             """客户端报到接口"""
@@ -201,25 +210,39 @@ class FederatedServerAPI:
             return {
                 "prototypes": self.core.global_prototypes.tolist(),
                 "labels": self.core.prototype_labels,
-                "count": len(self.core.prototype_labels)
+                "count": len(self.core.prototype_labels) if self.core.prototype_labels else 0
             }
-        
-        @self.app.get("/api/system/clients")
-        async def get_clients():
-            """获取所有客户端状态"""
-            return self.core.client_registry
-        
-        @self.app.post("/api/federated/aggregate")
-        async def aggregate_models():
-            """手动触发模型聚合"""
-            return await self.core.perform_federated_averaging()
-        
-        @self.app.get("/api/system/model_info")
-        async def get_model_info():
-            """获取嵌入模型信息"""
-            return await self.core.get_model_info()
         
         @self.app.get("/api/model/download")
         async def download_model():
-            """下载嵌入模型文件"""
-            return await self.core.download_model()
+            """下载嵌入模型"""
+            model_path = f"./models/{self.core.model_name}"
+            
+            if not os.path.exists(model_path):
+                raise HTTPException(status_code=404, detail="模型不存在")
+            
+            # 创建ZIP文件
+            zip_path = f"./temp/{self.core.model_name}.zip"
+            os.makedirs(os.path.dirname(zip_path), exist_ok=True)
+            
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+                for root, dirs, files in os.walk(model_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arc_path = os.path.relpath(file_path, os.path.dirname(model_path))
+                        zipf.write(file_path, arc_path)
+            
+            return FileResponse(
+                path=zip_path,
+                filename=f"{self.core.model_name}.zip",
+                media_type='application/zip'
+            )
+        
+        @self.app.get("/api/system/model_info")
+        async def get_model_info():
+            """获取模型信息"""
+            return {
+                "model_name": self.core.model_name,
+                "model_hash": self.core.embedding_model_hash,
+                "embedding_dim": self.core.embedding_dim
+            }
