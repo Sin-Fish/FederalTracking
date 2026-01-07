@@ -29,8 +29,8 @@ class FederatedClient:
                  client_id: Optional[str] = None,
                  data_path: Optional[str] = None,
                  privacy_level: str = "medium",
-                 n_state_prototypes: Optional[int] = None,
-                 n_action_prototypes: Optional[int] = None):
+                 n_state_prototypes: int = 5,
+                 n_action_prototypes: int = 10):
         
         # 如果没有提供server_url，则从环境变量获取，否则使用默认值
         if server_url is None:
@@ -41,9 +41,9 @@ class FederatedClient:
         self.data_path = Path(data_path) if data_path else None
         self.privacy_level = privacy_level
         
-        # 聚类参数 - 初始化为None，稍后从服务器获取
-        self.n_state_prototypes = n_state_prototypes  # 如果提供了则使用，否则从服务器获取
-        self.n_action_prototypes = n_action_prototypes  # 如果提供了则使用，否则从服务器获取
+        # 聚类参数
+        self.n_state_prototypes = n_state_prototypes
+        self.n_action_prototypes = n_action_prototypes
         
         # 初始化组件
         self.data_processor = DataProcessor(privacy_level)
@@ -67,8 +67,8 @@ class FederatedClient:
         ║ 客户端ID: {self.client_id:<25} ║
         ║ 服务器: {self.server_url:<25} ║
         ║ 隐私级别: {privacy_level:<25} ║
-        ║ 状态原型数: {'待获取' if self.n_state_prototypes is None else self.n_state_prototypes:<23} ║
-        ║ 动作原型数: {'待获取' if self.n_action_prototypes is None else self.n_action_prototypes:<23} ║
+        ║ 状态原型数: {self.n_state_prototypes:<23} ║
+        ║ 动作原型数: {self.n_action_prototypes:<23} ║
         ╚══════════════════════════════════════╝
         """)
     
@@ -110,12 +110,7 @@ class FederatedClient:
             else:
                 print("[CLIENT] 错误：嵌入模型未加载，请先完成服务器注册")
                 return None, None
-
-        # 如果原型数未设置，则从服务器获取或动态计算
-        if self.n_state_prototypes is None or self.n_action_prototypes is None:
-            print("[CLIENT] 原型数量未设置，从服务器获取配置或动态计算...")
-            self._sync_config_from_server(len(state_paths), len(action_paths))
-
+        
         # 执行本地双路聚类
         state_prototypes, action_prototypes = self.data_processor.perform_local_clustering(
             state_paths, 
@@ -129,37 +124,6 @@ class FederatedClient:
         print(f"[CLIENT] 状态原型数量: {len(state_prototypes)}, 动作原型数量: {len(action_prototypes)}")
         
         return state_prototypes, action_prototypes
-
-    def _sync_config_from_server(self, state_path_count: int, action_path_count: int):
-        """从服务器同步配置参数，并动态计算动作原型数"""
-        # 尝试从服务器获取配置（如果服务器在注册时返回了相关信息）
-        try:
-            response = requests.get(f"{self.server_url}/api/system/config", timeout=30)
-            if response.status_code == 200:
-                config = response.json()
-                server_n_prototypes = config.get("n_prototypes", 5)
-                # 使用服务器提供的原型数作为状态原型数
-                if self.n_state_prototypes is None:
-                    self.n_state_prototypes = server_n_prototypes
-                    print(f"[CLIENT] 从服务器获取状态原型数: {self.n_state_prototypes}")
-            else:
-                print(f"[CLIENT] 获取服务器配置失败: {response.status_code}, 使用默认值")
-                if self.n_state_prototypes is None:
-                    self.n_state_prototypes = 5  # 默认值
-        except Exception as e:
-            print(f"[CLIENT] 获取服务器配置时发生错误: {e}, 使用默认值")
-            if self.n_state_prototypes is None:
-                self.n_state_prototypes = 5  # 默认值
-
-        # 动态计算动作原型数，基于数据量和进程数
-        if self.n_action_prototypes is None:
-            unique_process_count = self.data_processor.get_unique_process_count()
-            # 基于动作路径数量和唯一进程数计算动作原型数
-            calculated_action_prototypes = max(5, min(action_path_count, unique_process_count * 2))
-            self.n_action_prototypes = calculated_action_prototypes
-            print(f"[CLIENT] 动态计算动作原型数: 基于{unique_process_count}个唯一进程和{action_path_count}个动作路径，设置为{self.n_action_prototypes}")
-
-        print(f"[CLIENT] 最终配置 - 状态原型数: {self.n_state_prototypes}, 动作原型数: {self.n_action_prototypes}")
     
     # ==================== 联邦通信接口 ====================
     def register_to_server(self) -> bool:
@@ -236,8 +200,6 @@ class FederatedClient:
         
         print("[CLIENT] 就位检查完成")
         
-        print("[CLIENT] 就位检查完成")
-        
         # 8. 等待训练开始信号（在此之前服务器会完成原型生成）
         print("[CLIENT] 等待服务器训练开始指令...")
         training_info = self.communication.wait_for_training_start()
@@ -302,9 +264,9 @@ def main():
                        choices=["low", "medium", "high"], help="隐私保护级别")
     parser.add_argument("--simulate", action="store_true", help="使用模拟数据")
     parser.add_argument("--register-only", action="store_true", help="仅注册不训练")
-    parser.add_argument("--n-state-prototypes", type=int, default=None,
+    parser.add_argument("--n-state-prototypes", type=int, default=5,
                        help="状态原型数量")
-    parser.add_argument("--n-action-prototypes", type=int, default=None,
+    parser.add_argument("--n-action-prototypes", type=int, default=10,
                        help="动作原型数量")
     
     args = parser.parse_args()
@@ -313,10 +275,32 @@ def main():
     # 构建 server_url：优先使用参数，其次环境变量，最后默认值
     server_url = args.server_url or os.getenv("SERVER_URL", "http://host.docker.internal:8000")
     
+    # 构建 data_path：优先使用命令行参数，其次从环境变量构建，最后为None
+    data_path = args.data_path
+    if not data_path:
+        # 尝试从环境变量构建数据路径
+        data_dir = os.getenv("DATA_DIR")
+        data_file = os.getenv("DATA_FILE")
+        if data_dir and data_file:
+            data_path = os.path.join(data_dir, data_file)
+            print(f"[CLIENT] 从环境变量构建数据路径: {data_path}")
+        elif data_file:
+            # 如果只有文件名，尝试在当前目录或常见数据目录查找
+            possible_paths = [
+                data_file,
+                os.path.join("/app/data/input", data_file),
+                os.path.join("./data", data_file),
+            ]
+            for path in possible_paths:
+                if os.path.exists(path):
+                    data_path = path
+                    print(f"[CLIENT] 找到数据文件: {data_path}")
+                    break
+    
     client = FederatedClient(
         server_url=server_url,
         client_id=args.client_id,
-        data_path=args.data_path,
+        data_path=data_path,
         privacy_level=args.privacy_level,
         n_state_prototypes=args.n_state_prototypes,
         n_action_prototypes=args.n_action_prototypes

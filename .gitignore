@@ -113,3 +113,4 @@ model_cache/
 aggregated_models/
 test_data/
 .env
+.cursor/
