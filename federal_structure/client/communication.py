@@ -191,7 +191,30 @@ class CommunicationModule:
     
     def load_embedding_model(self, server_model_hash: str):
         """加载嵌入模型，如果本地没有则从服务器下载"""
-        from sentence_transformers import SentenceTransformer
+        import traceback
+        
+        # 首先检查 PyTorch 是否安装
+        print("[CLIENT] 检查 PyTorch 环境...")
+        try:
+            import torch
+            print(f"[CLIENT] ✓ PyTorch 已安装，版本: {torch.__version__}")
+            print(f"[CLIENT]   - CUDA 可用: {torch.cuda.is_available()}")
+            print(f"[CLIENT]   - CUDA 版本: {torch.version.cuda if torch.cuda.is_available() else 'N/A'}")
+        except ImportError as e:
+            print(f"[CLIENT] ❌ PyTorch 未安装或导入失败")
+            print(f"[CLIENT]   错误详情: {e}")
+            print(f"[CLIENT]   请检查 Docker 镜像是否正确安装了 PyTorch")
+            raise Exception(f"PyTorch 未安装: {e}")
+        
+        # 检查 sentence-transformers 是否可用
+        print("[CLIENT] 检查 sentence-transformers 库...")
+        try:
+            from sentence_transformers import SentenceTransformer
+            print(f"[CLIENT] ✓ sentence-transformers 已安装")
+        except ImportError as e:
+            print(f"[CLIENT] ❌ sentence-transformers 未安装或导入失败")
+            print(f"[CLIENT]   错误详情: {e}")
+            raise Exception(f"sentence-transformers 未安装: {e}")
         
         model_path = f"{self.model_cache_path}/{self.model_name}"
         
@@ -206,8 +229,29 @@ class CommunicationModule:
                 model_path = nested_path
             
             print(f"[CLIENT] 从本地缓存加载模型: {model_path}")
-            self.embedding_model = SentenceTransformer(model_path)
-            self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+            print(f"[CLIENT] 检查模型路径是否存在...")
+            if not os.path.exists(model_path):
+                raise Exception(f"模型路径不存在: {model_path}")
+            
+            # 列出模型目录内容
+            if os.path.isdir(model_path):
+                files = os.listdir(model_path)
+                print(f"[CLIENT] 模型目录包含 {len(files)} 个文件/目录: {files[:5]}...")  # 只显示前5个
+            
+            try:
+                print(f"[CLIENT] 开始加载 SentenceTransformer 模型...")
+                self.embedding_model = SentenceTransformer(model_path)
+                self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+                print(f"[CLIENT] ✓ 模型加载成功，嵌入维度: {self.embedding_dim}")
+            except Exception as e:
+                print(f"[CLIENT] ❌ 加载模型时发生错误:")
+                print(f"[CLIENT]   异常类型: {type(e).__name__}")
+                print(f"[CLIENT]   错误信息: {str(e)}")
+                print(f"[CLIENT]   详细堆栈:")
+                for line in traceback.format_exc().split('\n'):
+                    if line.strip():
+                        print(f"[CLIENT]     {line}")
+                raise
         else:
             # 从服务器下载模型
             print(f"[CLIENT] 本地模型不存在或哈希不匹配，开始下载...")
@@ -219,8 +263,19 @@ class CommunicationModule:
                     model_path = nested_path
                 
                 print(f"[CLIENT] 从本地缓存加载模型: {model_path}")
-                self.embedding_model = SentenceTransformer(model_path)
-                self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+                try:
+                    self.embedding_model = SentenceTransformer(model_path)
+                    self.embedding_dim = self.embedding_model.get_sentence_embedding_dimension()
+                    print(f"[CLIENT] ✓ 模型加载成功，嵌入维度: {self.embedding_dim}")
+                except Exception as e:
+                    print(f"[CLIENT] ❌ 加载模型时发生错误:")
+                    print(f"[CLIENT]   异常类型: {type(e).__name__}")
+                    print(f"[CLIENT]   错误信息: {str(e)}")
+                    print(f"[CLIENT]   详细堆栈:")
+                    for line in traceback.format_exc().split('\n'):
+                        if line.strip():
+                            print(f"[CLIENT]     {line}")
+                    raise
             else:
                 print(f"[CLIENT] 模型下载失败，无法继续执行")
                 raise Exception("模型下载失败")
@@ -272,7 +327,13 @@ class CommunicationModule:
                         # 将加载的模型引用也赋给data_processor，以便在聚类中使用
                         self.data_processor.embedding_model = self.embedding_model
                     except Exception as e:
-                        print(f"[CLIENT] 加载嵌入模型失败: {e}")
+                        print(f"[CLIENT] ❌ 加载嵌入模型失败: {e}")
+                        print(f"[CLIENT]   异常类型: {type(e).__name__}")
+                        import traceback
+                        print(f"[CLIENT]   完整错误堆栈:")
+                        for line in traceback.format_exc().split('\n'):
+                            if line.strip():
+                                print(f"[CLIENT]     {line}")
                         return False
                 
                 self.is_registered = True

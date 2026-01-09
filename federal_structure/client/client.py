@@ -332,4 +332,44 @@ def main():
 
 
 if __name__ == "__main__":
+    # 在启动时检查关键依赖
+    print("[CLIENT] 检查运行环境...")
+    
+    # 检查 PyTorch
+    try:
+        import torch
+        print(f"[CLIENT] ✓ PyTorch 已安装，版本: {torch.__version__}")
+        print(f"[CLIENT]   - Python 路径: {sys.executable}")
+        print(f"[CLIENT]   - PyTorch 路径: {torch.__file__}")
+        print(f"[CLIENT]   - CUDA 可用: {torch.cuda.is_available()}")
+    except ImportError as e:
+        print(f"[CLIENT] ❌ PyTorch 未安装或导入失败: {e}")
+        print(f"[CLIENT]   请检查 Docker 镜像是否正确安装了 PyTorch")
+        print(f"[CLIENT]   尝试运行: pip install torch")
+        sys.exit(1)
+    
+    # 检查 transformers
+    try:
+        import transformers
+        print(f"[CLIENT] ✓ transformers 已安装，版本: {transformers.__version__}")
+        # 测试 transformers 是否能检测到 PyTorch
+        from transformers import AutoModel
+        print(f"[CLIENT] ✓ transformers.AutoModel 可以导入")
+    except ImportError as e:
+        print(f"[CLIENT] ❌ transformers 未安装或导入失败: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[CLIENT] ⚠️  transformers 导入时出现问题: {e}")
+        print(f"[CLIENT]   这可能是 PyTorch 安装问题导致的")
+    
+    # 检查 sentence-transformers
+    try:
+        from sentence_transformers import SentenceTransformer
+        print(f"[CLIENT] ✓ sentence-transformers 已安装")
+    except ImportError as e:
+        print(f"[CLIENT] ❌ sentence-transformers 未安装: {e}")
+        sys.exit(1)
+    
+    print("[CLIENT] 环境检查完成，启动客户端...\n")
+    
     main()

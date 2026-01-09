@@ -178,21 +178,36 @@ class NewFederatedControl:
             )
             
             if not image_check.stdout.strip():
+                print("\n" + "="*60)
                 print("未找到客户端镜像，正在构建...")
-                # 构建客户端镜像
-                build_result = subprocess.run(
-                    ["docker", "build", 
+                print("="*60)
+                # 构建客户端镜像，实时显示输出
+                build_cmd = [
+                    "docker", "build", 
                     "-t", "federated-client:latest",
                     "-f", os.path.join(self.project_root, "federal_structure/client/Dockerfile"),
-                    os.path.join(self.project_root, "federal_structure/client")],
-                    capture_output=True, text=True, encoding='utf-8'
-                )
+                    os.path.join(self.project_root, "federal_structure/client")
+                ]
                 
-                if build_result.returncode != 0:
-                    print(f"构建客户端镜像失败: {build_result.stderr}")
+                # 直接运行，实时显示输出（不使用 capture_output）
+                try:
+                    build_result = subprocess.run(
+                        build_cmd,
+                        encoding='utf-8'
+                    )  # 不捕获输出，直接显示到控制台
+                    
+                    print("="*60)
+                    if build_result.returncode != 0:
+                        print(f"\n❌ 构建客户端镜像失败 (退出码: {build_result.returncode})")
+                        return
+                    else:
+                        print("\n✓ 客户端镜像构建成功")
+                except KeyboardInterrupt:
+                    print("\n\n⚠️ 构建被用户中断")
                     return
-                else:
-                    print("客户端镜像构建成功")
+                except Exception as e:
+                    print(f"\n❌ 构建过程中发生错误: {e}")
+                    return
             
             # 构建容器内的数据文件完整路径
             container_data_path = f"/app/data/input/{data_filename}"
@@ -220,13 +235,137 @@ class NewFederatedControl:
             ]
             
             # 运行容器
+            print("正在创建并启动客户端容器...")
             run_result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
             
-            if run_result.returncode == 0:
-                print(f"✓ 客户端容器 {client_id} 已启动")
-                print(f"  容器ID: {run_result.stdout.strip()}")
-            else:
-                print(f"✗ 启动客户端容器失败: {run_result.stderr}")
+            if run_result.returncode != 0:
+                print(f"✗ 创建客户端容器失败: {run_result.stderr}")
+                return
+            
+            container_id = run_result.stdout.strip()
+            print(f"  容器已创建: {container_id}")
+            print("  等待容器启动并验证状态...")
+            
+            # 等待容器启动（最多等待30秒）
+            max_wait_time = 30
+            wait_interval = 2
+            waited_time = 0
+            startup_failed = False
+            error_message = ""
+            
+            while waited_time < max_wait_time:
+                time.sleep(wait_interval)
+                waited_time += wait_interval
+                
+                # 检查容器状态
+                status_result = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.State.Status}}", client_id],
+                    capture_output=True, text=True, encoding='utf-8'
+                )
+                
+                if status_result.returncode != 0:
+                    error_message = f"无法检查容器状态: {status_result.stderr}"
+                    startup_failed = True
+                    break
+                
+                container_status = status_result.stdout.strip()
+                
+                if container_status == "running":
+                    # 容器在运行，检查日志看是否有启动错误
+                    print("  容器正在运行，检查启动日志...")
+                    log_result = subprocess.run(
+                        ["docker", "logs", "--tail", "50", client_id],
+                        capture_output=True, text=True, encoding='utf-8',
+                        timeout=10
+                    )
+                    
+                    if log_result.returncode == 0:
+                        logs = log_result.stdout
+                        # 检查是否有明显的错误或成功标志
+                        error_keywords = [
+                            "ImportError", "ModuleNotFoundError", "FileNotFoundError",
+                            "启动失败", "启动异常", "❌"
+                        ]
+                        success_keywords = [
+                            "环境检查完成", "开始运行联邦学习客户端完整流程",
+                            "✓ PyTorch", "✓ transformers", "✓ sentence-transformers"
+                        ]
+                        
+                        has_error = any(keyword in logs for keyword in error_keywords)
+                        has_success = any(keyword in logs for keyword in success_keywords)
+                        
+                        if has_error and not has_success:
+                            error_message = "容器启动时检测到错误"
+                            startup_failed = True
+                            print(f"\n  检测到启动错误，容器日志：")
+                            print("  " + "="*56)
+                            # 显示最后30行日志
+                            for line in logs.split('\n')[-30:]:
+                                if line.strip():
+                                    print(f"  {line}")
+                            print("  " + "="*56)
+                            break
+                        elif has_success:
+                            # 启动成功
+                            print(f"✓ 客户端容器 {client_id} 启动成功")
+                            print(f"  容器ID: {container_id}")
+                            print(f"  可以查看完整日志: docker logs {client_id}")
+                            return
+                    
+                    # 如果日志检查不明确，再等待一下
+                    if waited_time < max_wait_time:
+                        continue
+                    else:
+                        # 超时但容器在运行，可能是启动较慢，给出警告
+                        print(f"⚠️ 容器已运行但未能确认启动状态（已等待{waited_time}秒）")
+                        print(f"  容器ID: {container_id}")
+                        print(f"  请手动检查日志: docker logs {client_id}")
+                        return
+                        
+                elif container_status == "exited":
+                    # 容器已退出，说明启动失败
+                    error_message = "容器启动后立即退出"
+                    startup_failed = True
+                    break
+                elif container_status == "dead":
+                    error_message = "容器状态为 dead"
+                    startup_failed = True
+                    break
+                # 其他状态（creating, restarting等）继续等待
+                
+            # 处理启动失败
+            if startup_failed or waited_time >= max_wait_time:
+                if waited_time >= max_wait_time:
+                    error_message = f"等待容器启动超时（{max_wait_time}秒）"
+                
+                print(f"\n✗ 客户端容器启动失败: {error_message}")
+                
+                # 获取容器日志
+                print("\n  容器日志（最后50行）：")
+                print("  " + "="*56)
+                log_result = subprocess.run(
+                    ["docker", "logs", "--tail", "50", client_id],
+                    capture_output=True, text=True, encoding='utf-8',
+                    timeout=10
+                )
+                if log_result.returncode == 0:
+                    for line in log_result.stdout.split('\n'):
+                        if line.strip():
+                            print(f"  {line}")
+                print("  " + "="*56)
+                
+                # 删除失败的容器
+                print(f"\n  正在删除失败的容器 {client_id}...")
+                delete_result = subprocess.run(
+                    ["docker", "rm", "-f", client_id],
+                    capture_output=True, text=True, encoding='utf-8'
+                )
+                if delete_result.returncode == 0:
+                    print(f"  ✓ 容器已删除")
+                else:
+                    print(f"  ⚠️ 删除容器失败: {delete_result.stderr}")
+                
+                print(f"\n❌ 客户端启动失败，容器已删除")
                 return
                     
         except Exception as e:

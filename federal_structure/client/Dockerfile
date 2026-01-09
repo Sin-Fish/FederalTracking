@@ -5,13 +5,34 @@ ENV TOKENIZERS_PARALLELISM=false
 
 WORKDIR /app
 
-# 安装依赖
+# 安装系统依赖（PyTorch 可能需要）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# 先安装 PyTorch（使用清华源加速，升级到 2.1+ 以满足 transformers 要求）
+RUN pip install --no-cache-dir torch>=2.1.0 torchvision>=0.16.0 torchaudio>=2.1.0 \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    python -c "import torch; print(f'PyTorch {torch.__version__} 安装成功')"
+
+# 安装其他依赖
 COPY requirements.txt .
 RUN if grep -q "^--require-hashes" requirements.txt; then \
         sed -i '/^--require-hashes/d' requirements.txt; \
     fi
 
-RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+# 安装其他依赖（从清华源加速，跳过已安装的 torch 相关包）
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple || \
+    (echo "部分包安装失败，尝试继续..." && \
+     pip install --no-cache-dir -r requirements.txt --upgrade-strategy only-if-needed)
+
+# 验证 PyTorch 和 transformers 的集成
+RUN python -c "import torch; print(f'✓ PyTorch {torch.__version__} 可用')" && \
+    python -c "import transformers; print(f'✓ transformers {transformers.__version__} 可用')" && \
+    python -c "from transformers import AutoModel; print('✓ transformers.AutoModel 可以导入')" && \
+    python -c "from transformers.utils import is_torch_available; print(f'✓ transformers 检测到 PyTorch: {is_torch_available()}')" || \
+    (echo "❌ PyTorch 和 transformers 集成验证失败" && exit 1)
 
 # 创建下载模型的脚本
 RUN echo "import os" > download_model.py && \
